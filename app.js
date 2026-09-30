@@ -10,7 +10,7 @@ let tab = 'live', lang = 'es', cache = {}, topList = [], hls = null, cur = null,
 /* ---------- Favoritos ---------- */
 const getFavs = () => { try { return JSON.parse(localStorage.getItem(LS)) || []; } catch { return []; } };
 const isFav = s => getFavs().includes(s);
-const toggleFav = s => { const f = getFavs(); localStorage.setItem(LS, JSON.stringify(f.includes(s) ? f.filter(x => x !== s) : [...f, s])); };
+const toggleFav = s => { const f = getFavs(); if (!f.includes(s)) saveMemo(s); localStorage.setItem(LS, JSON.stringify(f.includes(s) ? f.filter(x => x !== s) : [...f, s])); };
 
 /* ---------- API ---------- */
 const KEYLS = 'kicklite.key';
@@ -31,15 +31,25 @@ async function kick(path) {
   finally { clearTimeout(t); }
 }
 const img = x => { let u = typeof x === 'string' ? x : (x?.src || x?.url || (x?.srcset || x?.responsive || '').split(' ')[0] || ''); return u.startsWith('//') ? 'https:' + u : u; };
+const PICRE = /^(profile_?pic(ture)?|profilepic|avatar)$/i;
+function deep(o, re, d = 0) {
+  if (!o || typeof o !== 'object' || d > 4) return '';
+  for (const k of Object.keys(o)) {
+    const v = o[k];
+    if (re.test(k)) { const u = img(v); if (/^(https?:)?\/\//.test(u)) return u; }
+    if (v && typeof v === 'object') { const r = deep(v, re, d + 1); if (r) return r; }
+  }
+  return '';
+}
 function fromChannel(c) {
   const ls = c.livestream;
-  return { slug:c.slug, name:c.user?.username || c.slug, avatar:img(c.user?.profile_pic || c.user?.profilePic || c.profile_pic || c.profile_picture), live:!!ls,
+  return { slug:c.slug, name:c.user?.username || c.slug, avatar:deep(c.user, PICRE) || deep(c, PICRE), live:!!ls,
     title:ls?.session_title || '', game:ls?.categories?.[0]?.name || '', viewers:ls?.viewer_count || 0,
-    thumb:img(ls?.thumbnail), hls:c.playback_url || '', since:ls?.created_at || ls?.start_time || '', chat:c.chatroom?.id || 0 };
+    thumb:img(ls?.thumbnail) || img(c.previous_livestreams?.[0]?.thumbnail) || img(c.offline_banner_image) || img(c.banner_image), hls:c.playback_url || '', since:ls?.created_at || ls?.start_time || '', chat:c.chatroom?.id || 0 };
 }
 function fromLive(x) {
   return { slug:x.channel?.slug, name:x.channel?.user?.username || x.channel?.slug,
-    avatar:img(x.channel?.profile_picture || x.channel?.user?.profile_pic || x.profile_picture), live:true,
+    avatar:deep(x.channel, PICRE) || deep(x, PICRE), live:true,
     title:x.session_title || '', game:x.categories?.[0]?.name || '', viewers:x.viewer_count || 0,
     thumb:img(x.thumbnail), hls:'', since:x.created_at || x.start_time || '' };
 }
@@ -65,9 +75,11 @@ async function getTop() {
 const hue = t => Math.abs([...t].reduce((h, c) => (h * 31 + c.charCodeAt(0)) | 0, 7)) % 360;
 const ini = s => `<span class="ini" style="background:hsl(${hue(s.slug || '')} 30% 22%)">${esc((s.name || '?')[0]).toUpperCase()}</span>`;
 const pic = u => u ? `<img src="${esc(u)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : '';
-const avatar = s => ini(s) + pic(s.avatar);
+const avatar = s => { if (!s.avatar && typeof gd === 'function') gd('sin avatar en los datos: ' + s.slug); return ini(s) + pic(s.avatar); };
+const ph = s => { const u = !s.thumb && s.avatar ? esc(s.avatar) : '';
+  return `<div class="ph"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>${u ? `<img class="bg" src="${u}" alt="" referrerpolicy="no-referrer"><img class="mid" src="${u}" alt="" referrerpolicy="no-referrer">` : ''}</div>`; };
 function card(s) {
-  const th = ini(s) + pic(s.thumb);
+  const th = ph(s) + pic(s.thumb);
   return `<li class="card" data-slug="${esc(s.slug)}">
     <div class="th ${s.live ? '' : 'off'}">${th}${s.live ? `<span class="badge">EN VIVO</span><span class="vw">${fmt(s.viewers)}</span>` : '<span class="badge off">OFFLINE</span>'}</div>
     <div class="meta"><div class="av">${avatar(s)}</div>
@@ -79,15 +91,32 @@ function memoize(items) {
   let m = {}; try { m = JSON.parse(localStorage.getItem(MEMO)) || {}; } catch {}
   let dirty = false;
   items.forEach(s => {
-    const o = m[s.slug] || {};
-    if (s.avatar) { if (isFav(s.slug) && o.avatar !== s.avatar) { m[s.slug] = {...o, avatar:s.avatar}; dirty = true; } } else s.avatar = o.avatar || '';
-    const o2 = m[s.slug] || o;
-    if (s.thumb) { if (s.live && isFav(s.slug) && o2.thumb !== s.thumb) { m[s.slug] = {...o2, thumb:s.thumb}; dirty = true; } } else s.thumb = o2.thumb || '';
+    const fav = isFav(s.slug); let o = m[s.slug] || {};
+    if (s.avatar) { if (fav && o.avatar !== s.avatar) { o = m[s.slug] = {...o, avatar:s.avatar}; dirty = true; } } else s.avatar = o.avatar || '';
+    if (s.live) { if (s.thumb && fav && o.thumb !== s.thumb) { m[s.slug] = {...o, thumb:s.thumb}; dirty = true; } }
+    else if (o.thumb) s.thumb = o.thumb;                 // offline: última vista previa guardada
+    if (!s.thumb) s.thumb = o.thumb || '';
   });
   if (dirty) try { localStorage.setItem(MEMO, JSON.stringify(m)); } catch {}
 }
+function saveMemo(slug) {   // al marcar ♡ se guarda lo que ya se ve en pantalla
+  const c = cache[slug]; if (!c) return; let m = {}; try { m = JSON.parse(localStorage.getItem(MEMO)) || {}; } catch {}
+  m[slug] = {...m[slug], ...(c.avatar ? {avatar:c.avatar} : {}), ...(c.live && c.thumb ? {thumb:c.thumb} : {})};
+  try { localStorage.setItem(MEMO, JSON.stringify(m)); } catch {}
+}
+async function hydrate(items) {   // completa avatares que faltan pidiendo el canal (máx. 6, uno a uno)
+  for (const s of items.filter(x => !x.avatar && !x.hyd).slice(0, 6)) {
+    s.hyd = true;
+    try {
+      const c = await getChannel(s.slug); if (!c.avatar) continue;
+      s.avatar = c.avatar; cache[s.slug] = {...cache[s.slug], avatar:c.avatar};
+      document.querySelectorAll('.card').forEach(el => { if (el.dataset.slug === s.slug) el.querySelector('.av').innerHTML = avatar(s); });
+    } catch {}
+  }
+}
 function show(items, msg, retry) {
   memoize(items);
+  if (tab !== 'favs') setTimeout(() => hydrate(items), 300);
   items.forEach(s => cache[s.slug] = {...cache[s.slug], ...s});
   $('#list').innerHTML = items.map(card).join('');
   $('#empty').hidden = items.length > 0;
@@ -156,6 +185,9 @@ function paintInfo() {
 const HLSPROXY = '/api/hls?u=';
 const DEBUG = /[?&]debug/.test(location.search);
 let mode = 'direct';
+const gd = t => { if (!DEBUG) return; let d = $('#gdbg'); if (!d) { d = document.createElement('pre'); d.id = 'gdbg';
+  d.style.cssText = 'position:fixed;left:0;right:0;bottom:70px;max-height:30vh;overflow:hidden;margin:0;padding:6px;font-size:10px;background:#000c;color:#9fb0a5;z-index:99;pointer-events:none;white-space:pre-wrap;word-break:break-all'; document.body.appendChild(d); }
+  d.textContent = t + '\n' + d.textContent.slice(0, 700); };
 const dbg = (...a) => { console.log('[kick]', ...a); if (DEBUG) { const d = $('#dbg'); d.hidden = false; d.textContent = a.join(' ') + '\n' + d.textContent.slice(0, 300); } };
 function giveUp() { clearTimeout(watch); if (hls) { hls.destroy(); hls = null; } $('#retry').hidden = false; }
 function next(reason) {
@@ -258,6 +290,7 @@ function addMsg(d) {
 document.addEventListener('error', e => {
   const i = e.target; if (i.tagName !== 'IMG') return;
   const o = i.dataset.o || i.src;
+  gd('imagen falló (' + (i.dataset.fb ? 'proxy' : 'directo') + '): ' + o);
   if (!i.dataset.fb && /^https:\/\/([\w-]+\.)*kick\.com\//.test(o)) { i.dataset.fb = '1'; i.dataset.o = o; i.src = '/api/img?u=' + encodeURIComponent(o) + kq(); }
   else i.remove();
 }, true);

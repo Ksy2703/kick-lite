@@ -1,5 +1,5 @@
 // Cachea solo la "cáscara" de la app. API y video siempre van a la red.
-const CACHE = 'kicklite-v9';
+const CACHE = 'kicklite-v11';
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'manifest.json', 'icons/icon-192.png', 'icons/icon-512.png'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL))); self.skipWaiting(); });
 self.addEventListener('activate', e => {
