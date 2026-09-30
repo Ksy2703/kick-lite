@@ -14,9 +14,13 @@ const toggleFav = s => { const f = getFavs(); localStorage.setItem(LS, JSON.stri
 
 /* ---------- API ---------- */
 async function kick(path) {
-  const r = await fetch(PROXY + encodeURIComponent(path));
-  if (!r.ok) throw new Error('El proxy respondió ' + r.status);
-  return r.json();
+  const ac = new AbortController(), t = setTimeout(() => ac.abort(), 12000);
+  try {
+    const r = await fetch(PROXY + encodeURIComponent(path), {signal: ac.signal});
+    if (!r.ok) throw new Error('El proxy respondió ' + r.status);
+    return await r.json();
+  } catch (e) { throw new Error(e.name === 'AbortError' ? 'tiempo de espera agotado' : e.message); }
+  finally { clearTimeout(t); }
 }
 const img = x => typeof x === 'string' ? x : (x?.src || x?.url || '');
 function fromChannel(c) {
@@ -32,11 +36,21 @@ function fromLive(x) {
     thumb:img(x.thumbnail), hls:'', since:x.created_at || x.start_time || '' };
 }
 const getChannel = async slug => fromChannel(await kick('/api/v2/channels/' + encodeURIComponent(slug)));
+const LANGS = {es:['es','spanish','español','espanol'], en:['en','english'], pt:['pt','portuguese','português','portugues']};
 async function getTop() {
-  const j = await kick(`/stream/livestreams/${lang}?sort=desc`);
-  const arr = Array.isArray(j.data) ? j.data : (j.data?.livestreams || j.livestreams || []);
-  // "Más vistos": orden real por espectadores y se descartan streams de prueba (0 viewers)
-  return arr.map(fromLive).filter(s => s.slug && s.viewers > 0).sort((a, b) => b.viewers - a.viewers);
+  // Se piden 3 páginas y se filtra por idioma aquí, porque el endpoint no siempre respeta el idioma pedido
+  const pages = await Promise.allSettled([1, 2, 3].map(p => kick(`/stream/livestreams/${lang}?sort=desc&page=${p}&language=${lang}`)));
+  const ok = pages.filter(p => p.status === 'fulfilled');
+  if (!ok.length) throw new Error(pages[0].reason?.message || 'sin respuesta');
+  const raw = ok.flatMap(p => Array.isArray(p.value.data) ? p.value.data : (p.value.data?.livestreams || p.value.livestreams || []));
+  const seen = new Set(), out = [];
+  for (const x of raw) {
+    const code = String(x.language || x.channel?.language || '').toLowerCase().trim();
+    if (code && !LANGS[lang].includes(code)) continue;     // otro idioma → fuera
+    const s = fromLive(x);
+    if (s.slug && s.viewers > 0 && !seen.has(s.slug)) { seen.add(s.slug); out.push(s); }
+  }
+  return out.sort((a, b) => b.viewers - a.viewers);
 }
 
 /* ---------- Render ---------- */
@@ -100,24 +114,28 @@ function paintInfo() {
   if (s.since) { const t = () => { const m = Math.max(0, Math.floor((Date.now() - new Date(s.since.replace(' ', 'T') + (/Z|\+/.test(s.since) ? '' : 'Z'))) / 60000));
       if (!isNaN(m)) $('#pmeta').textContent = `${s.name}${s.game ? ' · ' + s.game : ''} · ${Math.floor(m / 60)}h ${m % 60}m en directo`; }; t(); upT = setInterval(t, 60000); }
 }
-const fail = msg => { $('#spin').hidden = true; $('#err').hidden = false; $('#errmsg').textContent = msg; };
+let log = [], watch;
+const dbg = t => { log.push(t); $('#dbg').textContent = log.slice(-3).join(' › '); };
+const fail = msg => { clearTimeout(watch); msg += ' [' + log.slice(-4).join(' › ') + ']'; $('#spin').hidden = true; $('#err').hidden = false; $('#errmsg').textContent = msg; };
 
 async function play(slug) {
   stop(true);
   cur = {...cache[slug]};
   $('#player').hidden = false; $('#player').scrollTop = 0; document.body.style.overflow = 'hidden';
-  $('#err').hidden = true; $('#spin').hidden = false; paintInfo();
+  log = []; dbg('pidiendo canal'); $('#err').hidden = true; $('#spin').hidden = false; paintInfo();
   const more = topList.filter(s => s.slug !== slug).slice(0, 8);
   $('#more').innerHTML = more.map(card).join(''); more.forEach(s => cache[s.slug] ||= s);
   try { // Siempre pedimos el canal fresco: ahí viene la URL .m3u8 actual
     cur = {...cur, ...(await getChannel(slug))}; paintInfo();
   } catch (e) { return fail('No se pudo obtener el canal: ' + e.message); }
-  if (!cur.live || !cur.hls) return fail('Este canal no está transmitiendo ahora mismo.');
+  if (!cur.live || !cur.hls) return fail(cur.live ? 'Kick no devolvió la URL del video (playback_url vacío).' : 'Este canal no está transmitiendo ahora mismo.');
+  dbg('canal ok · ' + new URL(cur.hls).hostname);
   tries = 0; startStream();
   try { wake = await navigator.wakeLock?.request('screen'); } catch {}
 }
 function startStream() {
   $('#err').hidden = true; $('#spin').hidden = false;
+  clearTimeout(watch); watch = setTimeout(() => fail('El video no arrancó en 20 s.'), 20000);
   if (hls) { hls.destroy(); hls = null; }
   if (window.Hls && Hls.isSupported()) {          // Android / Chrome / Firefox
     hls = new Hls({lowLatencyMode:false, maxBufferLength:20, backBufferLength:30});
@@ -125,7 +143,10 @@ function startStream() {
       $('#qual').innerHTML = '<option value="-1">Auto</option>' + d.levels.map((l, i) => `<option value="${i}">${l.height}p</option>`).reverse().join('');
       play2();
     });
+    hls.on(Hls.Events.MANIFEST_LOADED, () => dbg('lista .m3u8 ok'));
+    hls.on(Hls.Events.FRAG_LOADED, () => { if (log[log.length - 1] !== 'segmentos ok') dbg('segmentos ok'); });
     hls.on(Hls.Events.ERROR, (_, d) => {
+      dbg(d.details + (d.response?.code ? ' ' + d.response.code : ''));
       if (!d.fatal) return;
       if (d.type === Hls.ErrorTypes.MEDIA_ERROR && tries++ < 3) return hls.recoverMediaError();
       if (d.type === Hls.ErrorTypes.NETWORK_ERROR && tries++ < 3) return setTimeout(() => hls.startLoad(), 1500);
@@ -138,13 +159,13 @@ function play2() { v.play().catch(() => { v.muted = true; v.play().catch(() => {
 function stop(keepUI) {
   v.pause(); v.removeAttribute('src'); v.load();
   if (hls) { hls.destroy(); hls = null; }
-  clearInterval(upT); wake?.release?.().catch?.(() => {}); wake = null;
+  clearTimeout(watch); clearInterval(upT); wake?.release?.().catch?.(() => {}); wake = null;
   if (!keepUI) { $('#player').hidden = true; document.body.style.overflow = ''; cur = null; if (document.fullscreenElement) document.exitFullscreen(); }
 }
 
 /* ---------- Eventos ---------- */
 ['play', 'pause', 'volumechange', 'timeupdate'].forEach(e => v.addEventListener(e, paintP));
-v.addEventListener('playing', () => { $('#spin').hidden = true; $('#err').hidden = true; ovShow(); });
+v.addEventListener('playing', () => { clearTimeout(watch); dbg('reproduciendo'); $('#spin').hidden = true; $('#err').hidden = true; ovShow(); });
 v.addEventListener('waiting', () => { $('#spin').hidden = false; });
 $('#stage').addEventListener('click', e => { if (e.target.closest('button,select,input')) return; $('#ov').classList.contains('hide') ? ovShow() : $('#ov').classList.add('hide'); });
 $('#pp').onclick = () => { v.paused ? v.play() : v.pause(); ovShow(); };

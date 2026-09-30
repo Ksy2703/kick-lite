@@ -59,3 +59,4 @@ video{width:100%;height:100%;background:#000;object-fit:contain}
 .sub{padding:6px 14px 0;font-size:16px}
 .player .grid{padding-bottom:40px}
 @media(orientation:landscape) and (max-height:500px){.stage{max-height:100vh;aspect-ratio:auto;height:100vh}}
+.dbg{position:absolute;left:0;right:0;bottom:46px;text-align:center;font-size:11px;color:#9fb0a5;padding:0 12px;pointer-events:none}
