@@ -18,3 +18,9 @@ a esa URL completa (ej. 'https://tu-app.vercel.app/api/kick?path=').
 - iOS: Safari → Compartir → "Agregar a pantalla de inicio".
 - Android: Chrome → menú ⋮ → "Instalar aplicación".
 Requiere HTTPS (todos los hosts anteriores lo dan).
+
+## Seguridad para compartir
+1. Vercel → tu proyecto → Settings → Environment Variables → añade ACCESS_CODE con un código (ej. "panda-2026") → Deployments → Redeploy.
+   La app pedirá el código una sola vez en cada dispositivo. Para dejar fuera a alguien, cambia el código y vuelve a desplegar.
+2. No publiques el enlace. vercel.json + robots.txt piden a los buscadores que no lo indexen.
+3. Si ves mucho consumo, revisa Vercel → Usage.

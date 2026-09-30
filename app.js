@@ -13,25 +13,33 @@ const isFav = s => getFavs().includes(s);
 const toggleFav = s => { const f = getFavs(); localStorage.setItem(LS, JSON.stringify(f.includes(s) ? f.filter(x => x !== s) : [...f, s])); };
 
 /* ---------- API ---------- */
+const KEYLS = 'kicklite.key';
+const kq = () => localStorage.getItem(KEYLS) ? '&k=' + encodeURIComponent(localStorage.getItem(KEYLS)) : '';
 async function kick(path) {
   const ac = new AbortController(), t = setTimeout(() => ac.abort(), 12000);
   try {
-    const r = await fetch(PROXY + encodeURIComponent(path), {signal: ac.signal});
+    const used = localStorage.getItem(KEYLS);
+    const r = await fetch(PROXY + encodeURIComponent(path) + kq(), {signal: ac.signal});
+    if (r.status === 401) {   // la app es privada: pide el código una sola vez y lo recuerda
+      if (localStorage.getItem(KEYLS) === used) { const c = prompt('Esta app es privada. Escribe el código de acceso:'); if (c) localStorage.setItem(KEYLS, c.trim()); }
+      if (localStorage.getItem(KEYLS) !== used) { clearTimeout(t); return kick(path); }
+      throw new Error('código de acceso requerido');
+    }
     if (!r.ok) throw new Error('El proxy respondió ' + r.status);
     return await r.json();
   } catch (e) { throw new Error(e.name === 'AbortError' ? 'tiempo de espera agotado' : e.message); }
   finally { clearTimeout(t); }
 }
-const img = x => typeof x === 'string' ? x : (x?.src || x?.url || '');
+const img = x => { let u = typeof x === 'string' ? x : (x?.src || x?.url || (x?.srcset || x?.responsive || '').split(' ')[0] || ''); return u.startsWith('//') ? 'https:' + u : u; };
 function fromChannel(c) {
   const ls = c.livestream;
-  return { slug:c.slug, name:c.user?.username || c.slug, avatar:c.user?.profile_pic || '', live:!!ls,
+  return { slug:c.slug, name:c.user?.username || c.slug, avatar:img(c.user?.profile_pic || c.user?.profilePic || c.profile_pic || c.profile_picture), live:!!ls,
     title:ls?.session_title || '', game:ls?.categories?.[0]?.name || '', viewers:ls?.viewer_count || 0,
     thumb:img(ls?.thumbnail), hls:c.playback_url || '', since:ls?.created_at || ls?.start_time || '', chat:c.chatroom?.id || 0 };
 }
 function fromLive(x) {
   return { slug:x.channel?.slug, name:x.channel?.user?.username || x.channel?.slug,
-    avatar:x.channel?.profile_picture || x.channel?.user?.profile_pic || '', live:true,
+    avatar:img(x.channel?.profile_picture || x.channel?.user?.profile_pic || x.profile_picture), live:true,
     title:x.session_title || '', game:x.categories?.[0]?.name || '', viewers:x.viewer_count || 0,
     thumb:img(x.thumbnail), hls:'', since:x.created_at || x.start_time || '' };
 }
@@ -54,16 +62,32 @@ async function getTop() {
 }
 
 /* ---------- Render ---------- */
-const avatar = s => s.avatar ? `<img src="${esc(s.avatar)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">` : '';
+const hue = t => Math.abs([...t].reduce((h, c) => (h * 31 + c.charCodeAt(0)) | 0, 7)) % 360;
+const ini = s => `<span class="ini" style="background:hsl(${hue(s.slug || '')} 30% 22%)">${esc((s.name || '?')[0]).toUpperCase()}</span>`;
+const pic = u => u ? `<img src="${esc(u)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : '';
+const avatar = s => ini(s) + pic(s.avatar);
 function card(s) {
-  const th = s.thumb ? `<img src="${esc(s.thumb)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">` : '';
+  const th = ini(s) + pic(s.thumb);
   return `<li class="card" data-slug="${esc(s.slug)}">
-    <div class="th">${th}${s.live ? `<span class="badge">EN VIVO</span><span class="vw">${fmt(s.viewers)}</span>` : '<span class="badge off">OFFLINE</span>'}</div>
+    <div class="th ${s.live ? '' : 'off'}">${th}${s.live ? `<span class="badge">EN VIVO</span><span class="vw">${fmt(s.viewers)}</span>` : '<span class="badge off">OFFLINE</span>'}</div>
     <div class="meta"><div class="av">${avatar(s)}</div>
       <div class="info"><div class="t">${esc(s.live ? s.title : 'Sin transmisión')}</div><div class="m">${esc(s.name)}${s.game ? ' · ' + esc(s.game) : ''}</div></div>
       <button class="fav ${isFav(s.slug) ? 'on' : ''}" data-fav="${esc(s.slug)}" aria-label="Favorito">${isFav(s.slug) ? '♥' : '♡'}</button></div></li>`;
 }
+const MEMO = 'kicklite.info';
+function memoize(items) {
+  let m = {}; try { m = JSON.parse(localStorage.getItem(MEMO)) || {}; } catch {}
+  let dirty = false;
+  items.forEach(s => {
+    const o = m[s.slug] || {};
+    if (s.avatar) { if (isFav(s.slug) && o.avatar !== s.avatar) { m[s.slug] = {...o, avatar:s.avatar}; dirty = true; } } else s.avatar = o.avatar || '';
+    const o2 = m[s.slug] || o;
+    if (s.thumb) { if (s.live && isFav(s.slug) && o2.thumb !== s.thumb) { m[s.slug] = {...o2, thumb:s.thumb}; dirty = true; } } else s.thumb = o2.thumb || '';
+  });
+  if (dirty) try { localStorage.setItem(MEMO, JSON.stringify(m)); } catch {}
+}
 function show(items, msg, retry) {
+  memoize(items);
   items.forEach(s => cache[s.slug] = {...cache[s.slug], ...s});
   $('#list').innerHTML = items.map(card).join('');
   $('#empty').hidden = items.length > 0;
@@ -158,7 +182,7 @@ function startStream() {
   watch = setTimeout(() => next('sin respuesta en 12 s'), 12000);
   if (window.Hls && Hls.isSupported()) {          // Android / Chrome / Firefox / iOS 17.1+
     const cfg = {lowLatencyMode:false, maxBufferLength:20, backBufferLength:300, liveSyncDurationCount: mode === 'direct' ? 2 : 3, maxLiveSyncPlaybackRate:1.1, manifestLoadingMaxRetry:1, fragLoadingMaxRetry:3};
-    if (mode === 'proxy') cfg.xhrSetup = (xhr, url) => xhr.open('GET', HLSPROXY + encodeURIComponent(url), true);
+    if (mode === 'proxy') cfg.xhrSetup = (xhr, url) => xhr.open('GET', HLSPROXY + encodeURIComponent(url) + kq(), true);
     hls = new Hls(cfg);
     hls.on(Hls.Events.MANIFEST_PARSED, (_, d) => {
       $('#qual').innerHTML = '<option value="-1">Auto</option>' + d.levels.map((l, i) => `<option value="${i}">${l.height}p</option>`).reverse().join('');
@@ -173,7 +197,7 @@ function startStream() {
     hls.loadSource(cur.hls); hls.attachMedia(v);
   } else {                                         // iOS antiguo: HLS nativo
     v.onerror = () => next('nativo');
-    v.src = mode === 'proxy' ? '/api/hls?r=1&u=' + encodeURIComponent(cur.hls) : cur.hls; play2();
+    v.src = mode === 'proxy' ? '/api/hls?r=1' + kq() + '&u=' + encodeURIComponent(cur.hls) : cur.hls; play2();
   }
 }
 function play2() { v.play().catch(() => { v.muted = true; v.play().catch(() => {}); }); }
@@ -230,6 +254,13 @@ function addMsg(d) {
   while (ul.children.length > 150) ul.firstChild.remove();
   if (near) box.scrollTop = box.scrollHeight; else $('#jump').hidden = false;
 }
+
+document.addEventListener('error', e => {
+  const i = e.target; if (i.tagName !== 'IMG') return;
+  const o = i.dataset.o || i.src;
+  if (!i.dataset.fb && /^https:\/\/([\w-]+\.)*kick\.com\//.test(o)) { i.dataset.fb = '1'; i.dataset.o = o; i.src = '/api/img?u=' + encodeURIComponent(o) + kq(); }
+  else i.remove();
+}, true);
 
 /* ---------- Eventos ---------- */
 ['play', 'pause', 'volumechange', 'timeupdate'].forEach(e => v.addEventListener(e, paintP));
