@@ -108,10 +108,12 @@ function paintP() {
 let dragging = false;
 const mmss = s => { s = Math.max(0, Math.round(s)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
 const edge = () => v.seekable.length ? v.seekable.end(v.seekable.length - 1) : 0;
+let firstLive = true;
+function goLive() { const e = edge(); if (e > 0) v.currentTime = Math.max(v.seekable.start(0), e - 1); v.play().catch(() => {}); }
 function seekInfo() {
   if (!v.seekable.length) return;
   const s = v.seekable.start(0), e = edge(), sk = $('#seek'), behind = Math.max(0, e - v.currentTime);
-  if (!dragging) { sk.min = s; sk.max = e; sk.value = v.currentTime; }
+  if (!dragging) { sk.min = s; sk.max = e; sk.value = behind <= 8 ? e : v.currentTime; }
   $('#tl').textContent = behind > 8 ? '-' + mmss(behind) : 'EN VIVO';
   $('#golive').classList.toggle('behind', behind > 8);
 }
@@ -151,7 +153,7 @@ async function play(slug) {
   try { wake = await navigator.wakeLock?.request('screen'); } catch {}
 }
 function startStream() {
-  clearTimeout(watch); $('#retry').hidden = true;
+  firstLive = true; clearTimeout(watch); $('#retry').hidden = true;
   if (hls) { hls.destroy(); hls = null; }
   watch = setTimeout(() => next('sin respuesta en 12 s'), 12000);
   if (window.Hls && Hls.isSupported()) {          // Android / Chrome / Firefox / iOS 17.1+
@@ -231,12 +233,12 @@ function addMsg(d) {
 
 /* ---------- Eventos ---------- */
 ['play', 'pause', 'volumechange', 'timeupdate'].forEach(e => v.addEventListener(e, paintP));
-v.addEventListener('playing', () => { clearTimeout(watch); ovShow(); });
+v.addEventListener('playing', () => { clearTimeout(watch); ovShow(); if (firstLive && edge() > 0) { firstLive = false; goLive(); } });
 $('#stage').addEventListener('click', e => { if (e.target.closest('button,select,input')) return; $('#ov').classList.contains('hide') ? ovShow() : $('#ov').classList.add('hide'); });
 $('#pp').onclick = () => { v.paused ? v.play() : v.pause(); ovShow(); };
 $('#mute').onclick = () => { v.muted = !v.muted; ovShow(); };
 $('#vol').oninput = e => { v.volume = +e.target.value; v.muted = v.volume === 0; };
-$('#golive').onclick = () => { const e = hls?.liveSyncPosition ?? (v.seekable.length ? v.seekable.end(v.seekable.length - 1) : 0); if (e) v.currentTime = e; v.play(); };
+$('#golive').onclick = () => { goLive(); ovShow(); };
 $('#qual').onchange = e => { if (hls) hls.currentLevel = +e.target.value; };
 $('#fs').onclick = () => { const st = $('#stage'); if (document.fullscreenElement) document.exitFullscreen(); else if (st.requestFullscreen) st.requestFullscreen(); else v.webkitEnterFullscreen?.(); };
 $('#pip').onclick = () => { if (document.pictureInPictureEnabled) document.pictureInPictureElement ? document.exitPictureInPicture() : v.requestPictureInPicture().catch(() => {}); else v.webkitSetPresentationMode?.('picture-in-picture'); };
