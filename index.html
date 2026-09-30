@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Kick Lite</title>
+<meta name="theme-color" content="#000000">
+<link rel="manifest" href="manifest.json">
+<!-- iOS: necesario para "Agregar a pantalla de inicio" en modo app -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Kick Lite">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top"><h1 id="title">En vivo</h1></header>
+<div id="banner" class="banner" hidden></div>
+
+<main id="view">
+  <form id="searchForm" class="search" hidden>
+    <input id="q" type="search" placeholder="Nombre del canal (ej: xqc)" autocapitalize="none" autocomplete="off" aria-label="Buscar canal">
+    <button type="submit">Buscar</button>
+  </form>
+  <ul id="list" class="list"></ul>
+  <p id="empty" class="empty" hidden></p>
+</main>
+
+<nav class="tabs" aria-label="Navegación">
+  <button data-tab="live" class="on"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M6.3 6.3a8 8 0 0 0 0 11.4M17.7 6.3a8 8 0 0 1 0 11.4"/></svg>En vivo</button>
+  <button data-tab="favs"><svg viewBox="0 0 24 24"><path d="M12 20.5 4.2 13a4.8 4.8 0 0 1 6.8-6.8l1 1 1-1A4.8 4.8 0 0 1 19.8 13z"/></svg>Favoritos</button>
+  <button data-tab="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="m20 20-4.2-4.2"/></svg>Buscar</button>
+</nav>
+
+<section id="player" class="player" hidden>
+  <div class="bar">
+    <button id="close" aria-label="Cerrar">‹ Volver</button>
+    <span id="pname"></span>
+    <button id="pfav" aria-label="Favorito">♡</button>
+  </div>
+  <video id="video" controls playsinline autoplay></video>
+  <p id="ptitle" class="ptitle"></p>
+</section>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.5.13/hls.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
