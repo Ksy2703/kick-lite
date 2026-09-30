@@ -27,7 +27,7 @@ function fromChannel(c) {
   const ls = c.livestream;
   return { slug:c.slug, name:c.user?.username || c.slug, avatar:c.user?.profile_pic || '', live:!!ls,
     title:ls?.session_title || '', game:ls?.categories?.[0]?.name || '', viewers:ls?.viewer_count || 0,
-    thumb:img(ls?.thumbnail), hls:c.playback_url || '', since:ls?.created_at || ls?.start_time || '' };
+    thumb:img(ls?.thumbnail), hls:c.playback_url || '', since:ls?.created_at || ls?.start_time || '', chat:c.chatroom?.id || 0 };
 }
 function fromLive(x) {
   return { slug:x.channel?.slug, name:x.channel?.user?.username || x.channel?.slug,
@@ -103,8 +103,17 @@ const ovShow = () => { $('#ov').classList.remove('hide'); clearTimeout(hideT); i
 function paintP() {
   $('#pp').textContent = v.paused ? '▶' : '❚❚';
   $('#mute').textContent = v.muted || v.volume === 0 ? '🔇' : '🔊';
-  const behind = hls && hls.liveSyncPosition ? hls.liveSyncPosition - v.currentTime > 6 : false;
-  $('#golive').classList.toggle('behind', behind);
+  seekInfo();
+}
+let dragging = false;
+const mmss = s => { s = Math.max(0, Math.round(s)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
+const edge = () => v.seekable.length ? v.seekable.end(v.seekable.length - 1) : 0;
+function seekInfo() {
+  if (!v.seekable.length) return;
+  const s = v.seekable.start(0), e = edge(), sk = $('#seek'), behind = Math.max(0, e - v.currentTime);
+  if (!dragging) { sk.min = s; sk.max = e; sk.value = v.currentTime; }
+  $('#tl').textContent = behind > 8 ? '-' + mmss(behind) : 'EN VIVO';
+  $('#golive').classList.toggle('behind', behind > 8);
 }
 function paintInfo() {
   const s = cur, on = isFav(s.slug);
@@ -134,7 +143,7 @@ async function play(slug) {
   $('#retry').hidden = true; v.poster = cur.thumb || ''; paintInfo();
   const more = topList.filter(s => s.slug !== slug).slice(0, 8);
   $('#more').innerHTML = more.map(card).join(''); more.forEach(s => cache[s.slug] ||= s);
-  try { const c = await getChannel(slug); if (cur?.slug !== slug) return; cur = {...cur, ...c}; paintInfo(); }
+  try { const c = await getChannel(slug); if (cur?.slug !== slug) return; cur = {...cur, ...c}; paintInfo(); chatStart(cur.chat, slug); }
   catch (e) { dbg('canal', e.message); return giveUp(); }
   if (!cur.live || !cur.hls) { dbg('sin url de video', cur.live); return giveUp(); }
   dbg('url', cur.hls);
@@ -146,7 +155,7 @@ function startStream() {
   if (hls) { hls.destroy(); hls = null; }
   watch = setTimeout(() => next('sin respuesta en 12 s'), 12000);
   if (window.Hls && Hls.isSupported()) {          // Android / Chrome / Firefox / iOS 17.1+
-    const cfg = {lowLatencyMode:false, maxBufferLength:20, backBufferLength:30, manifestLoadingMaxRetry:1, fragLoadingMaxRetry:3};
+    const cfg = {lowLatencyMode:false, maxBufferLength:20, backBufferLength:300, liveSyncDurationCount: mode === 'direct' ? 2 : 3, maxLiveSyncPlaybackRate:1.1, manifestLoadingMaxRetry:1, fragLoadingMaxRetry:3};
     if (mode === 'proxy') cfg.xhrSetup = (xhr, url) => xhr.open('GET', HLSPROXY + encodeURIComponent(url), true);
     hls = new Hls(cfg);
     hls.on(Hls.Events.MANIFEST_PARSED, (_, d) => {
@@ -168,11 +177,56 @@ function startStream() {
 function play2() { v.play().catch(() => { v.muted = true; v.play().catch(() => {}); }); }
 function stop(keepUI) {
   clearTimeout(watch); clearInterval(upT);
-  v.onerror = null; v.pause(); v.removeAttribute('src'); v.load();
+  chatStop(); v.onerror = null; v.pause(); v.removeAttribute('src'); v.load();
   if (hls) { hls.destroy(); hls = null; }
   $('#retry').hidden = true; $('#dbg').hidden = true;
   wake?.release?.().catch?.(() => {}); wake = null;
   if (!keepUI) { $('#player').hidden = true; document.body.style.overflow = ''; cur = null; if (document.fullscreenElement) document.exitFullscreen(); }
+}
+
+/* ---------- Chat (WebSocket público de Kick, solo lectura) ---------- */
+const CHAT_WS = 'wss://ws-us2.pusher.com/app/32cbd69e4b950bf97679?protocol=7&client=js&version=8.4.0&flash=false';
+let ws = null, chatGen = 0;
+function chatStop() {
+  chatGen++; if (ws) { ws.onclose = ws.onmessage = null; try { ws.close(); } catch {} ws = null; }
+  $('#msgs').innerHTML = ''; $('#chatbox').innerHTML = ''; $('#jump').hidden = true;
+}
+function chatFrame(slug) {   // plan B: chat oficial embebido si el WebSocket no conecta
+  if (ws) { ws.onclose = ws.onmessage = null; try { ws.close(); } catch {} ws = null; }
+  $('#chatbox').innerHTML = `<iframe src="https://kick.com/popout/${encodeURIComponent(slug)}/chat" loading="lazy"></iframe>`;
+}
+function chatStart(id, slug) {
+  chatStop(); const gen = chatGen;
+  if (!id) return chatFrame(slug);
+  let ok = false, fails = 0;
+  const connect = () => {
+    const t = setTimeout(() => { if (!ok && gen === chatGen) { dbg('chat sin respuesta'); chatFrame(slug); } }, 8000);
+    ws = new WebSocket(CHAT_WS);
+    ws.onmessage = e => {
+      let m; try { m = JSON.parse(e.data); } catch { return; }
+      if (m.event === 'pusher:connection_established') ws.send(JSON.stringify({event:'pusher:subscribe', data:{auth:'', channel:`chatrooms.${id}.v2`}}));
+      else if (m.event === 'pusher_internal:subscription_succeeded') { ok = true; fails = 0; clearTimeout(t); dbg('chat conectado'); }
+      else if (m.event === 'pusher:ping') ws.send(JSON.stringify({event:'pusher:pong', data:{}}));
+      else if (m.event === 'App\\Events\\ChatMessageEvent') { try { addMsg(JSON.parse(m.data)); } catch {} }
+    };
+    ws.onclose = () => {
+      clearTimeout(t); if (gen !== chatGen) return;
+      if (!ok || ++fails > 3) { dbg('chat cerrado'); return chatFrame(slug); }
+      setTimeout(() => gen === chatGen && connect(), 2000);   // reconexión automática
+    };
+  };
+  connect();
+}
+function addMsg(d) {
+  if (!d?.content) return;
+  const box = $('#chat'), near = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+  const col = /^#[0-9a-f]{3,8}$/i.test(d.sender?.identity?.color || '') ? d.sender.identity.color : '#9fb0a5';
+  const txt = esc(d.content).replace(/\[emote:(\d+):([^\]]*)\]/g, (_, id, n) => `<img src="https://files.kick.com/emotes/${id}/fullsize" alt="${n}" loading="lazy">`);
+  const li = document.createElement('li'); li.className = 'msg';
+  li.innerHTML = `<b style="color:${col}">${esc(d.sender?.username || '')}</b>${txt}`;
+  const ul = $('#msgs'); ul.appendChild(li);
+  while (ul.children.length > 150) ul.firstChild.remove();
+  if (near) box.scrollTop = box.scrollHeight; else $('#jump').hidden = false;
 }
 
 /* ---------- Eventos ---------- */
@@ -190,6 +244,17 @@ $('#close').onclick = () => stop();
 $('#pfav').onclick = () => { toggleFav(cur.slug); paintInfo(); };
 $('#reload').onclick = load;
 $('#retry').onclick = () => cur && play(cur.slug);
+$('#seek').addEventListener('input', e => { dragging = true; ovShow(); $('#tl').textContent = '-' + mmss(+e.target.max - +e.target.value); });
+$('#seek').addEventListener('change', e => { v.currentTime = +e.target.value; dragging = false; ovShow(); });
+$('#rw').onclick = () => { v.currentTime = Math.max(v.seekable.length ? v.seekable.start(0) : 0, v.currentTime - 10); ovShow(); };
+$('#ff').onclick = () => { v.currentTime = Math.min(edge() - 1, v.currentTime + 10); ovShow(); };
+document.querySelector('.seg').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  document.querySelectorAll('.seg button').forEach(x => x.classList.toggle('on', x === b));
+  $('#chat').hidden = b.dataset.pane !== 'chat'; $('#morepane').hidden = b.dataset.pane === 'chat';
+});
+$('#jump').onclick = () => { $('#chat').scrollTop = $('#chat').scrollHeight; $('#jump').hidden = true; };
+$('#chat').addEventListener('scroll', () => { if ($('#chat').scrollHeight - $('#chat').scrollTop - $('#chat').clientHeight < 60) $('#jump').hidden = true; });
 
 const listClick = e => {
   const fb = e.target.closest('[data-fav]');

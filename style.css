@@ -62,3 +62,24 @@ video{width:100%;height:100%;background:#000;object-fit:contain}
 .dbg{position:absolute;left:0;right:0;bottom:46px;text-align:center;font-size:11px;color:#9fb0a5;padding:0 12px;pointer-events:none}
 .retry{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:64px;height:64px;border-radius:50%;background:#000a;font-size:30px;color:var(--g);z-index:3}
 .dbg{position:absolute;top:0;left:0;right:0;max-height:45%;overflow:hidden;margin:0;padding:6px 10px;font-size:10px;line-height:1.3;background:#000b;color:#9fb0a5;white-space:pre-wrap;word-break:break-all;z-index:4;pointer-events:none}
+
+.player{display:flex;flex-direction:column;overflow:hidden}
+.stage,.pinfo,.seg{flex:none}
+.ovw{display:flex;flex-direction:column}
+.seekrow{display:flex;gap:10px;align-items:center;padding:0 12px}
+#seek{flex:1;accent-color:var(--g);height:22px}
+.tl{font-size:12px;font-weight:700;min-width:54px}
+.sk{position:absolute;top:50%;transform:translateY(-50%);width:52px;height:52px;border-radius:50%;background:#0008;font-size:13px;font-weight:700}
+.sk.l{left:17%}.sk.r{right:17%}
+.seg{display:flex;gap:8px;padding:0 14px 8px}
+.seg button{padding:6px 16px;border-radius:99px;border:1px solid var(--line);color:var(--dim);font-size:13px}
+.seg .on{background:var(--card);color:var(--txt);border-color:var(--g)}
+.pane{flex:1;min-height:0;overflow-y:auto;position:relative}
+.chat{border-top:1px solid var(--line)}
+#msgs{list-style:none;padding:6px 14px 12px}
+.msg{padding:3px 0;font-size:14px;line-height:1.35;word-break:break-word}
+.msg b{font-weight:700;margin-right:6px}
+.msg img{height:24px;vertical-align:middle;margin:0 1px}
+#jump{position:sticky;bottom:10px;display:block;margin:0 auto;padding:6px 14px;border-radius:99px;background:var(--g);color:#000;font-weight:700;font-size:13px}
+#chatbox,#chatbox iframe{width:100%;height:100%;border:0}
+#chatbox{position:absolute;inset:0}
