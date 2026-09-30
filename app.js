@@ -1,154 +1,180 @@
-/* ============================================================
-   Kick Lite – cliente ligero. Sin frameworks.
-   IMPORTANTE: kick.com está detrás de Cloudflare y NO permite
-   CORS desde navegadores. Por eso la app llama a un pequeño
-   proxy propio (api/kick.js, ver README). Si el proxy no
-   responde, la app cambia a MODO DEMO con datos de ejemplo.
-   ============================================================ */
-const PROXY = '/api/kick?path=';          // Cambia si tu proxy vive en otra URL (ej. un Cloudflare Worker)
+/* Kick Lite v2 – sin datos falsos. Kick bloquea CORS, por eso se usa el proxy api/kick.js.
+   Si tu proxy vive en otra URL (Cloudflare Worker, etc.), cámbiala aquí: */
+const PROXY = '/api/kick?path=';
 const LS = 'kicklite.favs';
-const DEMO_HLS = 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8'; // stream público de prueba
-
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let tab = 'live', demo = false, cache = {}, hls = null, current = null;
+const fmt = n => new Intl.NumberFormat('es', {notation:'compact', maximumFractionDigits:1}).format(n || 0);
+let tab = 'live', lang = 'es', cache = {}, topList = [], hls = null, cur = null, hideT, upT, wake, tries = 0;
 
-/* ---------- Favoritos (localStorage) ---------- */
+/* ---------- Favoritos ---------- */
 const getFavs = () => { try { return JSON.parse(localStorage.getItem(LS)) || []; } catch { return []; } };
-const isFav = slug => getFavs().includes(slug);
-function toggleFav(slug) {
-  let f = getFavs();
-  f = f.includes(slug) ? f.filter(x => x !== slug) : [...f, slug];
-  localStorage.setItem(LS, JSON.stringify(f));
-}
+const isFav = s => getFavs().includes(s);
+const toggleFav = s => { const f = getFavs(); localStorage.setItem(LS, JSON.stringify(f.includes(s) ? f.filter(x => x !== s) : [...f, s])); };
 
 /* ---------- API ---------- */
 async function kick(path) {
   const r = await fetch(PROXY + encodeURIComponent(path));
-  if (!r.ok) throw new Error('HTTP ' + r.status);
+  if (!r.ok) throw new Error('El proxy respondió ' + r.status);
   return r.json();
 }
-// Normaliza la respuesta de un canal a un objeto simple
+const img = x => typeof x === 'string' ? x : (x?.src || x?.url || '');
 function fromChannel(c) {
   const ls = c.livestream;
-  return {
-    slug: c.slug, name: c.user?.username || c.slug, avatar: c.user?.profile_pic || '',
-    live: !!ls, title: ls?.session_title || '', game: ls?.categories?.[0]?.name || '',
-    viewers: ls?.viewer_count ?? 0, hls: c.playback_url || ''
-  };
+  return { slug:c.slug, name:c.user?.username || c.slug, avatar:c.user?.profile_pic || '', live:!!ls,
+    title:ls?.session_title || '', game:ls?.categories?.[0]?.name || '', viewers:ls?.viewer_count || 0,
+    thumb:img(ls?.thumbnail), hls:c.playback_url || '', since:ls?.created_at || ls?.start_time || '' };
 }
-// Normaliza un elemento de la lista /stream/livestreams/es
 function fromLive(x) {
-  return {
-    slug: x.channel?.slug, name: x.channel?.user?.username || x.channel?.slug,
-    avatar: x.channel?.user?.profile_pic || x.channel?.profile_picture || '',
-    live: true, title: x.session_title || '', game: x.categories?.[0]?.name || '',
-    viewers: x.viewer_count ?? 0, hls: x.channel?.playback_url || ''
-  };
+  return { slug:x.channel?.slug, name:x.channel?.user?.username || x.channel?.slug,
+    avatar:x.channel?.profile_picture || x.channel?.user?.profile_pic || '', live:true,
+    title:x.session_title || '', game:x.categories?.[0]?.name || '', viewers:x.viewer_count || 0,
+    thumb:img(x.thumbnail), hls:'', since:x.created_at || x.start_time || '' };
 }
-const getChannel = async slug => fromChannel(await kick('/api/v2/channels/' + slug));
-
-const DEMO = [
-  {slug:'demo1',name:'DemoStreamer',title:'Speedrun sin ads 🔥',game:'Just Chatting',viewers:12840},
-  {slug:'demo2',name:'PixelQueen',title:'Ranked hasta Diamante',game:'Valorant',viewers:5312},
-  {slug:'demo3',name:'NocheLatina',title:'Charlando con el chat',game:'IRL',viewers:987},
-].map(d => ({...d, avatar:'', live:true, hls:DEMO_HLS}));
+const getChannel = async slug => fromChannel(await kick('/api/v2/channels/' + encodeURIComponent(slug)));
+async function getTop() {
+  const j = await kick(`/stream/livestreams/${lang}?sort=desc`);
+  const arr = Array.isArray(j.data) ? j.data : (j.data?.livestreams || j.livestreams || []);
+  // "Más vistos": orden real por espectadores y se descartan streams de prueba (0 viewers)
+  return arr.map(fromLive).filter(s => s.slug && s.viewers > 0).sort((a, b) => b.viewers - a.viewers);
+}
 
 /* ---------- Render ---------- */
+const avatar = s => s.avatar ? `<img src="${esc(s.avatar)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">` : '';
 function card(s) {
-  const initial = esc(s.name[0] || '?').toUpperCase();
-  return `<li class="item" data-slug="${esc(s.slug)}">
-    <div class="av ${s.live ? 'live' : ''}">${s.avatar ? `<img src="${esc(s.avatar)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<i></i>`}</div>
-    <div class="info">
-      <div class="row"><span class="name">${esc(s.name)}</span>${s.live ? '<span class="badge">EN VIVO</span>' : '<span class="badge off">OFFLINE</span>'}</div>
-      <div class="t">${esc(s.live ? s.title : 'Sin transmisión')}</div>
-      ${s.live ? `<div class="m">${esc(s.game)} · <b>${s.viewers.toLocaleString('es')} espectadores</b></div>` : ''}
-    </div>
-    <button class="fav ${isFav(s.slug) ? 'on' : ''}" data-fav="${esc(s.slug)}" aria-label="Favorito">${isFav(s.slug) ? '♥' : '♡'}</button>
-  </li>`;
+  const th = s.thumb ? `<img src="${esc(s.thumb)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">` : '';
+  return `<li class="card" data-slug="${esc(s.slug)}">
+    <div class="th">${th}${s.live ? `<span class="badge">EN VIVO</span><span class="vw">${fmt(s.viewers)}</span>` : '<span class="badge off">OFFLINE</span>'}</div>
+    <div class="meta"><div class="av">${avatar(s)}</div>
+      <div class="info"><div class="t">${esc(s.live ? s.title : 'Sin transmisión')}</div><div class="m">${esc(s.name)}${s.game ? ' · ' + esc(s.game) : ''}</div></div>
+      <button class="fav ${isFav(s.slug) ? 'on' : ''}" data-fav="${esc(s.slug)}" aria-label="Favorito">${isFav(s.slug) ? '♥' : '♡'}</button></div></li>`;
 }
-function show(items, emptyMsg) {
-  items.forEach(s => cache[s.slug] = s);
+function show(items, msg, retry) {
+  items.forEach(s => cache[s.slug] = {...cache[s.slug], ...s});
   $('#list').innerHTML = items.map(card).join('');
   $('#empty').hidden = items.length > 0;
-  $('#empty').textContent = emptyMsg || '';
+  $('#empty p').textContent = msg || '';
+  $('#reload').hidden = !retry;
 }
-function banner(msg) { $('#banner').hidden = !msg; $('#banner').textContent = msg || ''; }
+const banner = m => { $('#banner').hidden = !m; $('#banner').textContent = m || ''; };
 
 async function load() {
-  const titles = {live:'En vivo', favs:'Favoritos', search:'Buscar'};
-  $('#title').textContent = titles[tab];
+  $('#title').textContent = {live:'Más vistos', favs:'Favoritos', search:'Buscar'}[tab];
+  $('#chips').hidden = tab !== 'live'; document.body.classList.toggle('sr', tab !== 'live');
   $('#searchForm').hidden = tab !== 'search';
   document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
-  $('#list').innerHTML = ''; $('#empty').hidden = false; $('#empty').textContent = 'Cargando…';
+  $('#list').innerHTML = ''; banner('');
+  $('#empty').hidden = false; $('#empty p').textContent = 'Cargando…'; $('#reload').hidden = true;
   try {
     if (tab === 'live') {
-      const j = await kick('/stream/livestreams/es');
-      show((j.data || []).map(fromLive).filter(s => s.slug), 'No hay transmisiones ahora mismo.');
-      banner('');
+      topList = await getTop();
+      show(topList, 'No hay transmisiones en este idioma ahora mismo.', true);
     } else if (tab === 'favs') {
       const favs = getFavs();
-      if (!favs.length) return show([], 'Aún no tienes favoritos. Toca ♡ en cualquier canal para guardarlo.');
+      if (!favs.length) return show([], 'Aún no tienes favoritos. Toca ♡ en cualquier canal.');
       const res = await Promise.allSettled(favs.map(getChannel));
-      const items = res.map((r, i) => r.status === 'fulfilled' ? r.value
-        : {slug:favs[i], name:favs[i], avatar:'', live:false, title:'', game:'', viewers:0, hls:''});
-      items.sort((a, b) => b.live - a.live || b.viewers - a.viewers);
-      show(items); banner('');
-    } else {
-      show([], 'Escribe el nombre exacto de un canal de Kick.');
-    }
+      const items = res.map((r, i) => r.status === 'fulfilled' ? r.value : {slug:favs[i], name:favs[i], avatar:'', live:false, viewers:0, title:'', game:'', thumb:'', hls:''});
+      show(items.sort((a, b) => b.live - a.live || b.viewers - a.viewers));
+    } else show([], 'Escribe el nombre exacto de un canal de Kick.');
   } catch (e) {
-    // Sin proxy → modo demo para poder probar la interfaz
-    demo = true;
-    banner('Modo demo: no se pudo contactar con Kick (falta desplegar el proxy api/kick.js).');
-    const favs = getFavs();
-    if (tab === 'favs') show(DEMO.filter(d => favs.includes(d.slug)), 'Aún no tienes favoritos.');
-    else if (tab === 'live') show(DEMO);
-    else show([], 'La búsqueda requiere el proxy.');
+    show([], 'No se pudo conectar con Kick (' + e.message + '). Revisa que api/kick.js esté desplegado en Vercel.', true);
   }
 }
 
 /* ---------- Reproductor ---------- */
-function play(s) {
-  if (!s.live || !s.hls) { banner('Este canal no está transmitiendo ahora.'); return; }
-  current = s;
-  $('#pname').textContent = s.name; $('#ptitle').textContent = s.title;
-  paintPFav(); $('#player').hidden = false;
-  const v = $('#video');
-  if (window.Hls && Hls.isSupported()) {          // Android / Chrome / Firefox
-    hls = new Hls({lowLatencyMode: true});
-    hls.loadSource(s.hls); hls.attachMedia(v);
-  } else v.src = s.hls;                           // iOS Safari: HLS nativo
-  v.play().catch(() => {});
+const v = $('#video');
+const ovShow = () => { $('#ov').classList.remove('hide'); clearTimeout(hideT); if (!v.paused) hideT = setTimeout(() => $('#ov').classList.add('hide'), 3000); };
+function paintP() {
+  $('#pp').textContent = v.paused ? '▶' : '❚❚';
+  $('#mute').textContent = v.muted || v.volume === 0 ? '🔇' : '🔊';
+  const behind = hls && hls.liveSyncPosition ? hls.liveSyncPosition - v.currentTime > 6 : false;
+  $('#golive').classList.toggle('behind', behind);
 }
-function stop() {
-  const v = $('#video'); v.pause(); v.removeAttribute('src'); v.load();
+function paintInfo() {
+  const s = cur, on = isFav(s.slug);
+  $('#pav').innerHTML = avatar(s); $('#ptitle').textContent = s.title;
+  $('#pmeta').textContent = `${s.name}${s.game ? ' · ' + s.game : ''}`;
+  $('#pview').textContent = s.viewers ? `${fmt(s.viewers)} viendo` : '';
+  $('#pfav').classList.toggle('on', on); $('#pfav').textContent = on ? '♥' : '♡';
+  clearInterval(upT);
+  if (s.since) { const t = () => { const m = Math.max(0, Math.floor((Date.now() - new Date(s.since.replace(' ', 'T') + (/Z|\+/.test(s.since) ? '' : 'Z'))) / 60000));
+      if (!isNaN(m)) $('#pmeta').textContent = `${s.name}${s.game ? ' · ' + s.game : ''} · ${Math.floor(m / 60)}h ${m % 60}m en directo`; }; t(); upT = setInterval(t, 60000); }
+}
+const fail = msg => { $('#spin').hidden = true; $('#err').hidden = false; $('#errmsg').textContent = msg; };
+
+async function play(slug) {
+  stop(true);
+  cur = {...cache[slug]};
+  $('#player').hidden = false; $('#player').scrollTop = 0; document.body.style.overflow = 'hidden';
+  $('#err').hidden = true; $('#spin').hidden = false; paintInfo();
+  const more = topList.filter(s => s.slug !== slug).slice(0, 8);
+  $('#more').innerHTML = more.map(card).join(''); more.forEach(s => cache[s.slug] ||= s);
+  try { // Siempre pedimos el canal fresco: ahí viene la URL .m3u8 actual
+    cur = {...cur, ...(await getChannel(slug))}; paintInfo();
+  } catch (e) { return fail('No se pudo obtener el canal: ' + e.message); }
+  if (!cur.live || !cur.hls) return fail('Este canal no está transmitiendo ahora mismo.');
+  tries = 0; startStream();
+  try { wake = await navigator.wakeLock?.request('screen'); } catch {}
+}
+function startStream() {
+  $('#err').hidden = true; $('#spin').hidden = false;
   if (hls) { hls.destroy(); hls = null; }
-  $('#player').hidden = true; current = null;
+  if (window.Hls && Hls.isSupported()) {          // Android / Chrome / Firefox
+    hls = new Hls({lowLatencyMode:false, maxBufferLength:20, backBufferLength:30});
+    hls.on(Hls.Events.MANIFEST_PARSED, (_, d) => {
+      $('#qual').innerHTML = '<option value="-1">Auto</option>' + d.levels.map((l, i) => `<option value="${i}">${l.height}p</option>`).reverse().join('');
+      play2();
+    });
+    hls.on(Hls.Events.ERROR, (_, d) => {
+      if (!d.fatal) return;
+      if (d.type === Hls.ErrorTypes.MEDIA_ERROR && tries++ < 3) return hls.recoverMediaError();
+      if (d.type === Hls.ErrorTypes.NETWORK_ERROR && tries++ < 3) return setTimeout(() => hls.startLoad(), 1500);
+      fail(`No se pudo reproducir (${d.type} / ${d.details}${d.response?.code ? ' ' + d.response.code : ''}).`);
+    });
+    hls.loadSource(cur.hls); hls.attachMedia(v);
+  } else { v.src = cur.hls; v.onerror = () => fail('Tu navegador no pudo abrir el stream.'); play2(); } // iOS: HLS nativo
 }
-function paintPFav() {
-  const b = $('#pfav'), on = current && isFav(current.slug);
-  b.classList.toggle('on', !!on); b.textContent = on ? '♥' : '♡';
+function play2() { v.play().catch(() => { v.muted = true; v.play().catch(() => {}); }); }
+function stop(keepUI) {
+  v.pause(); v.removeAttribute('src'); v.load();
+  if (hls) { hls.destroy(); hls = null; }
+  clearInterval(upT); wake?.release?.().catch?.(() => {}); wake = null;
+  if (!keepUI) { $('#player').hidden = true; document.body.style.overflow = ''; cur = null; if (document.fullscreenElement) document.exitFullscreen(); }
 }
 
 /* ---------- Eventos ---------- */
-$('#list').addEventListener('click', e => {
+['play', 'pause', 'volumechange', 'timeupdate'].forEach(e => v.addEventListener(e, paintP));
+v.addEventListener('playing', () => { $('#spin').hidden = true; $('#err').hidden = true; ovShow(); });
+v.addEventListener('waiting', () => { $('#spin').hidden = false; });
+$('#stage').addEventListener('click', e => { if (e.target.closest('button,select,input')) return; $('#ov').classList.contains('hide') ? ovShow() : $('#ov').classList.add('hide'); });
+$('#pp').onclick = () => { v.paused ? v.play() : v.pause(); ovShow(); };
+$('#mute').onclick = () => { v.muted = !v.muted; ovShow(); };
+$('#vol').oninput = e => { v.volume = +e.target.value; v.muted = v.volume === 0; };
+$('#golive').onclick = () => { const e = hls?.liveSyncPosition ?? (v.seekable.length ? v.seekable.end(v.seekable.length - 1) : 0); if (e) v.currentTime = e; v.play(); };
+$('#qual').onchange = e => { if (hls) hls.currentLevel = +e.target.value; };
+$('#fs').onclick = () => { const st = $('#stage'); if (document.fullscreenElement) document.exitFullscreen(); else if (st.requestFullscreen) st.requestFullscreen(); else v.webkitEnterFullscreen?.(); };
+$('#pip').onclick = () => { if (document.pictureInPictureEnabled) document.pictureInPictureElement ? document.exitPictureInPicture() : v.requestPictureInPicture().catch(() => {}); else v.webkitSetPresentationMode?.('picture-in-picture'); };
+$('#close').onclick = () => stop();
+$('#retry').onclick = () => cur && (cur.hls ? (tries = 0, startStream()) : play(cur.slug));
+$('#pfav').onclick = () => { toggleFav(cur.slug); paintInfo(); };
+$('#reload').onclick = load;
+
+const listClick = e => {
   const fb = e.target.closest('[data-fav]');
-  if (fb) { toggleFav(fb.dataset.fav); if (tab === 'favs') load(); else { fb.classList.toggle('on'); fb.textContent = isFav(fb.dataset.fav) ? '♥' : '♡'; } return; }
-  const li = e.target.closest('.item'); if (li) play(cache[li.dataset.slug]);
-});
-document.querySelector('.tabs').addEventListener('click', e => {
-  const b = e.target.closest('button'); if (b) { tab = b.dataset.tab; load(); }
+  if (fb) { toggleFav(fb.dataset.fav); if (tab === 'favs' && !$('#player').hidden === false) load(); else { fb.classList.toggle('on'); fb.textContent = isFav(fb.dataset.fav) ? '♥' : '♡'; } return; }
+  const li = e.target.closest('.card'); if (li) play(li.dataset.slug);
+};
+$('#list').addEventListener('click', listClick); $('#more').addEventListener('click', listClick);
+$('.tabs').addEventListener('click', e => { const b = e.target.closest('button'); if (b) { tab = b.dataset.tab; load(); } });
+$('#chips').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return; lang = b.dataset.lang;
+  document.querySelectorAll('#chips button').forEach(x => x.classList.toggle('on', x === b)); load();
 });
 $('#searchForm').addEventListener('submit', async e => {
-  e.preventDefault();
-  const slug = $('#q').value.trim().toLowerCase().replace(/\s+/g, '-'); if (!slug) return;
-  $('#empty').hidden = false; $('#empty').textContent = 'Buscando…'; $('#list').innerHTML = '';
-  try { show([await getChannel(slug)]); }
-  catch { show([], `No se encontró el canal "${slug}".`); }
+  e.preventDefault(); const slug = $('#q').value.trim().toLowerCase().replace(/\s+/g, '-'); if (!slug) return;
+  $('#list').innerHTML = ''; $('#empty').hidden = false; $('#empty p').textContent = 'Buscando…'; $('#reload').hidden = true;
+  try { show([await getChannel(slug)]); } catch { show([], `No se encontró el canal "${slug}".`); }
 });
-$('#close').onclick = stop;
-$('#pfav').onclick = () => { toggleFav(current.slug); paintPFav(); };
 
 load();
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('service-worker.js');

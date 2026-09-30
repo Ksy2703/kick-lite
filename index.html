@@ -6,7 +6,6 @@
 <title>Kick Lite</title>
 <meta name="theme-color" content="#000000">
 <link rel="manifest" href="manifest.json">
-<!-- iOS: necesario para "Agregar a pantalla de inicio" en modo app -->
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -15,32 +14,56 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<header class="top"><h1 id="title">En vivo</h1></header>
+<header class="top">
+  <h1 id="title">Más vistos</h1>
+  <div id="chips" class="chips">
+    <button data-lang="es" class="on">Español</button><button data-lang="en">English</button><button data-lang="pt">Português</button>
+  </div>
+</header>
 <div id="banner" class="banner" hidden></div>
-
-<main id="view">
+<main>
   <form id="searchForm" class="search" hidden>
-    <input id="q" type="search" placeholder="Nombre del canal (ej: xqc)" autocapitalize="none" autocomplete="off" aria-label="Buscar canal">
+    <input id="q" type="search" placeholder="Nombre del canal (ej: xqc)" autocapitalize="none" autocomplete="off">
     <button type="submit">Buscar</button>
   </form>
-  <ul id="list" class="list"></ul>
-  <p id="empty" class="empty" hidden></p>
+  <ul id="list" class="grid"></ul>
+  <div id="empty" class="empty" hidden><p></p><button id="reload">Reintentar</button></div>
 </main>
 
-<nav class="tabs" aria-label="Navegación">
-  <button data-tab="live" class="on"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M6.3 6.3a8 8 0 0 0 0 11.4M17.7 6.3a8 8 0 0 1 0 11.4"/></svg>En vivo</button>
+<nav class="tabs">
+  <button data-tab="live" class="on"><svg viewBox="0 0 24 24"><path d="M12 3c1 4 5 5 5 10a5 5 0 0 1-10 0c0-2 1-3 2-4 0 2 1 3 2 3 0-3-1-5 1-9z"/></svg>Top</button>
   <button data-tab="favs"><svg viewBox="0 0 24 24"><path d="M12 20.5 4.2 13a4.8 4.8 0 0 1 6.8-6.8l1 1 1-1A4.8 4.8 0 0 1 19.8 13z"/></svg>Favoritos</button>
   <button data-tab="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="m20 20-4.2-4.2"/></svg>Buscar</button>
 </nav>
 
 <section id="player" class="player" hidden>
-  <div class="bar">
-    <button id="close" aria-label="Cerrar">‹ Volver</button>
-    <span id="pname"></span>
-    <button id="pfav" aria-label="Favorito">♡</button>
+  <div class="stage" id="stage">
+    <video id="video" playsinline autoplay></video>
+    <div class="ov" id="ov">
+      <div class="ovt">
+        <button id="close" aria-label="Volver">‹</button>
+        <span class="badge">EN VIVO</span><span id="pview" class="pv"></span>
+        <i class="sp"></i><button id="pip" aria-label="Mini reproductor">⧉</button>
+      </div>
+      <button id="pp" class="big" aria-label="Pausa">❚❚</button>
+      <div class="ovb">
+        <button id="mute" aria-label="Silencio">🔊</button>
+        <input id="vol" type="range" min="0" max="1" step="0.05" value="1" aria-label="Volumen">
+        <button id="golive" class="gl">● Directo</button>
+        <select id="qual" aria-label="Calidad"><option value="-1">Auto</option></select>
+        <button id="fs" aria-label="Pantalla completa">⛶</button>
+      </div>
+    </div>
+    <div id="spin" class="spin"></div>
+    <div id="err" class="err" hidden><p id="errmsg"></p><button id="retry">Reintentar</button></div>
   </div>
-  <video id="video" controls playsinline autoplay></video>
-  <p id="ptitle" class="ptitle"></p>
+  <div class="pinfo">
+    <div class="av" id="pav"></div>
+    <div class="info"><div class="t" id="ptitle"></div><div class="m" id="pmeta"></div></div>
+    <button id="pfav" class="fav" aria-label="Favorito">♡</button>
+  </div>
+  <h3 class="sub">Más canales en vivo</h3>
+  <ul id="more" class="grid"></ul>
 </section>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.5.13/hls.min.js"></script>
