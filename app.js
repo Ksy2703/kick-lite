@@ -97,6 +97,8 @@ async function load() {
 
 /* ---------- Reproductor ---------- */
 const v = $('#video');
+v.disableRemotePlayback = true;                    // necesario para hls.js en iOS 17.1+
+let watch;
 const ovShow = () => { $('#ov').classList.remove('hide'); clearTimeout(hideT); if (!v.paused) hideT = setTimeout(() => $('#ov').classList.add('hide'), 3000); };
 function paintP() {
   $('#pp').textContent = v.paused ? '▶' : '❚❚';
@@ -114,59 +116,68 @@ function paintInfo() {
   if (s.since) { const t = () => { const m = Math.max(0, Math.floor((Date.now() - new Date(s.since.replace(' ', 'T') + (/Z|\+/.test(s.since) ? '' : 'Z'))) / 60000));
       if (!isNaN(m)) $('#pmeta').textContent = `${s.name}${s.game ? ' · ' + s.game : ''} · ${Math.floor(m / 60)}h ${m % 60}m en directo`; }; t(); upT = setInterval(t, 60000); }
 }
-let log = [], watch;
-const dbg = t => { log.push(t); $('#dbg').textContent = log.slice(-3).join(' › '); };
-const fail = msg => { clearTimeout(watch); msg += ' [' + log.slice(-4).join(' › ') + ']'; $('#spin').hidden = true; $('#err').hidden = false; $('#errmsg').textContent = msg; };
-
+/* Reproducción propia, sin anuncios: 1) directo  2) mismo video pasando por tu proxy /api/hls.
+   Si ambos fallan solo se muestra un botón ↻ (sin textos técnicos). Añade ?debug a la URL para ver el detalle. */
+const HLSPROXY = '/api/hls?u=';
+const DEBUG = /[?&]debug/.test(location.search);
+let mode = 'direct';
+const dbg = (...a) => { console.log('[kick]', ...a); if (DEBUG) { const d = $('#dbg'); d.hidden = false; d.textContent = a.join(' ') + '\n' + d.textContent.slice(0, 300); } };
+function giveUp() { clearTimeout(watch); if (hls) { hls.destroy(); hls = null; } $('#retry').hidden = false; }
+function next(reason) {
+  dbg('fallo en', mode, '→', reason); clearTimeout(watch);
+  if (mode === 'direct') { mode = 'proxy'; tries = 0; startStream(); } else giveUp();
+}
 async function play(slug) {
   stop(true);
-  cur = {...cache[slug]};
+  cur = {...cache[slug]}; mode = 'direct'; tries = 0;
   $('#player').hidden = false; $('#player').scrollTop = 0; document.body.style.overflow = 'hidden';
-  log = []; dbg('pidiendo canal'); $('#err').hidden = true; $('#spin').hidden = false; paintInfo();
+  $('#retry').hidden = true; v.poster = cur.thumb || ''; paintInfo();
   const more = topList.filter(s => s.slug !== slug).slice(0, 8);
   $('#more').innerHTML = more.map(card).join(''); more.forEach(s => cache[s.slug] ||= s);
-  try { // Siempre pedimos el canal fresco: ahí viene la URL .m3u8 actual
-    cur = {...cur, ...(await getChannel(slug))}; paintInfo();
-  } catch (e) { return fail('No se pudo obtener el canal: ' + e.message); }
-  if (!cur.live || !cur.hls) return fail(cur.live ? 'Kick no devolvió la URL del video (playback_url vacío).' : 'Este canal no está transmitiendo ahora mismo.');
-  dbg('canal ok · ' + new URL(cur.hls).hostname);
-  tries = 0; startStream();
+  try { const c = await getChannel(slug); if (cur?.slug !== slug) return; cur = {...cur, ...c}; paintInfo(); }
+  catch (e) { dbg('canal', e.message); return giveUp(); }
+  if (!cur.live || !cur.hls) { dbg('sin url de video', cur.live); return giveUp(); }
+  dbg('url', cur.hls);
+  startStream();
   try { wake = await navigator.wakeLock?.request('screen'); } catch {}
 }
 function startStream() {
-  $('#err').hidden = true; $('#spin').hidden = false;
-  clearTimeout(watch); watch = setTimeout(() => fail('El video no arrancó en 20 s.'), 20000);
+  clearTimeout(watch); $('#retry').hidden = true;
   if (hls) { hls.destroy(); hls = null; }
-  if (window.Hls && Hls.isSupported()) {          // Android / Chrome / Firefox
-    hls = new Hls({lowLatencyMode:false, maxBufferLength:20, backBufferLength:30});
+  watch = setTimeout(() => next('sin respuesta en 12 s'), 12000);
+  if (window.Hls && Hls.isSupported()) {          // Android / Chrome / Firefox / iOS 17.1+
+    const cfg = {lowLatencyMode:false, maxBufferLength:20, backBufferLength:30, manifestLoadingMaxRetry:1, fragLoadingMaxRetry:3};
+    if (mode === 'proxy') cfg.xhrSetup = (xhr, url) => xhr.open('GET', HLSPROXY + encodeURIComponent(url), true);
+    hls = new Hls(cfg);
     hls.on(Hls.Events.MANIFEST_PARSED, (_, d) => {
       $('#qual').innerHTML = '<option value="-1">Auto</option>' + d.levels.map((l, i) => `<option value="${i}">${l.height}p</option>`).reverse().join('');
       play2();
     });
-    hls.on(Hls.Events.MANIFEST_LOADED, () => dbg('lista .m3u8 ok'));
-    hls.on(Hls.Events.FRAG_LOADED, () => { if (log[log.length - 1] !== 'segmentos ok') dbg('segmentos ok'); });
     hls.on(Hls.Events.ERROR, (_, d) => {
-      dbg(d.details + (d.response?.code ? ' ' + d.response.code : ''));
+      dbg(d.type, d.details, d.response?.code || '');
       if (!d.fatal) return;
-      if (d.type === Hls.ErrorTypes.MEDIA_ERROR && tries++ < 3) return hls.recoverMediaError();
-      if (d.type === Hls.ErrorTypes.NETWORK_ERROR && tries++ < 3) return setTimeout(() => hls.startLoad(), 1500);
-      fail(`No se pudo reproducir (${d.type} / ${d.details}${d.response?.code ? ' ' + d.response.code : ''}).`);
+      if (d.type === Hls.ErrorTypes.MEDIA_ERROR && tries++ < 2) return hls.recoverMediaError();
+      next(d.details);
     });
     hls.loadSource(cur.hls); hls.attachMedia(v);
-  } else { v.src = cur.hls; v.onerror = () => fail('Tu navegador no pudo abrir el stream.'); play2(); } // iOS: HLS nativo
+  } else {                                         // iOS antiguo: HLS nativo
+    v.onerror = () => next('nativo');
+    v.src = mode === 'proxy' ? '/api/hls?r=1&u=' + encodeURIComponent(cur.hls) : cur.hls; play2();
+  }
 }
 function play2() { v.play().catch(() => { v.muted = true; v.play().catch(() => {}); }); }
 function stop(keepUI) {
-  v.pause(); v.removeAttribute('src'); v.load();
+  clearTimeout(watch); clearInterval(upT);
+  v.onerror = null; v.pause(); v.removeAttribute('src'); v.load();
   if (hls) { hls.destroy(); hls = null; }
-  clearTimeout(watch); clearInterval(upT); wake?.release?.().catch?.(() => {}); wake = null;
+  $('#retry').hidden = true; $('#dbg').hidden = true;
+  wake?.release?.().catch?.(() => {}); wake = null;
   if (!keepUI) { $('#player').hidden = true; document.body.style.overflow = ''; cur = null; if (document.fullscreenElement) document.exitFullscreen(); }
 }
 
 /* ---------- Eventos ---------- */
 ['play', 'pause', 'volumechange', 'timeupdate'].forEach(e => v.addEventListener(e, paintP));
-v.addEventListener('playing', () => { clearTimeout(watch); dbg('reproduciendo'); $('#spin').hidden = true; $('#err').hidden = true; ovShow(); });
-v.addEventListener('waiting', () => { $('#spin').hidden = false; });
+v.addEventListener('playing', () => { clearTimeout(watch); ovShow(); });
 $('#stage').addEventListener('click', e => { if (e.target.closest('button,select,input')) return; $('#ov').classList.contains('hide') ? ovShow() : $('#ov').classList.add('hide'); });
 $('#pp').onclick = () => { v.paused ? v.play() : v.pause(); ovShow(); };
 $('#mute').onclick = () => { v.muted = !v.muted; ovShow(); };
@@ -176,9 +187,9 @@ $('#qual').onchange = e => { if (hls) hls.currentLevel = +e.target.value; };
 $('#fs').onclick = () => { const st = $('#stage'); if (document.fullscreenElement) document.exitFullscreen(); else if (st.requestFullscreen) st.requestFullscreen(); else v.webkitEnterFullscreen?.(); };
 $('#pip').onclick = () => { if (document.pictureInPictureEnabled) document.pictureInPictureElement ? document.exitPictureInPicture() : v.requestPictureInPicture().catch(() => {}); else v.webkitSetPresentationMode?.('picture-in-picture'); };
 $('#close').onclick = () => stop();
-$('#retry').onclick = () => cur && (cur.hls ? (tries = 0, startStream()) : play(cur.slug));
 $('#pfav').onclick = () => { toggleFav(cur.slug); paintInfo(); };
 $('#reload').onclick = load;
+$('#retry').onclick = () => cur && play(cur.slug);
 
 const listClick = e => {
   const fb = e.target.closest('[data-fav]');
