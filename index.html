@@ -33,8 +33,22 @@
 <nav class="tabs">
   <button data-tab="live" class="on"><svg viewBox="0 0 24 24"><path d="M12 3c1 4 5 5 5 10a5 5 0 0 1-10 0c0-2 1-3 2-4 0 2 1 3 2 3 0-3-1-5 1-9z"/></svg>Top</button>
   <button data-tab="favs"><svg viewBox="0 0 24 24"><path d="M12 20.5 4.2 13a4.8 4.8 0 0 1 6.8-6.8l1 1 1-1A4.8 4.8 0 0 1 19.8 13z"/></svg>Favoritos</button>
+  <button data-tab="multi"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/></svg>Multi</button>
   <button data-tab="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="m20 20-4.2-4.2"/></svg>Buscar</button>
 </nav>
+
+<section id="multi" class="multi" hidden>
+  <div id="mgrid" class="mgrid"></div>
+  <div id="mtabs" class="mtabs"></div>
+  <div id="mchat" class="pane chat"><ul id="mmsgs"></ul><div id="mbox"></div><button id="mjump" hidden>↓ Mensajes nuevos</button></div>
+</section>
+<div id="sheet" class="sheet" hidden>
+  <div class="sheetin">
+    <div class="sh"><b>Añadir al multistream</b><button id="sclose" aria-label="Cerrar">✕</button></div>
+    <form id="sform" class="search"><input id="sq" placeholder="Nombre del canal" autocapitalize="none" autocomplete="off"><button type="submit">Añadir</button></form>
+    <div id="slist"></div>
+  </div>
+</div>
 
 <section id="player" class="player" hidden>
   <div class="stage" id="stage">
