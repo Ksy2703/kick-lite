@@ -301,6 +301,7 @@ document.addEventListener('error', e => {
 /* ---------- Multistream: hasta 4 streams, un chat visible ---------- */
 const MLS = 'kicklite.multi', MAX = 4, SLUG = /^[\w-]{2,40}$/;
 let mslots = ['', '', '', ''], msel = '', cells = {};
+let lay = localStorage.getItem('kicklite.mlay') || 'focus';   // 'focus' = uno grande + 3 pequeños · 'grid' = 2×2
 const mchat = Chat({msgs:'#mmsgs', box:'#mchat', jump:'#mjump', frame:'#mbox'});
 const saveSlots = () => { try { localStorage.setItem(MLS, JSON.stringify(mslots)); } catch {} };
 const cp = v => v.play().catch(() => { v.muted = true; v.play().catch(() => {}); });
@@ -384,8 +385,10 @@ function mchatSwitch() {
   if (c?.info) mchat.start(c.info.chat, msel);
 }
 function renderMTabs() {
+  $('#mgrid').classList.toggle('focus', lay === 'focus' && !!msel);
   const l = mslots.filter(Boolean);
   $('#mtabs').innerHTML = l.length ? l.map(s => `<button data-c="${s}" class="${s === msel ? 'on' : ''}">${esc(cache[s]?.name || s)}</button>`).join('') : '<span class="mh">Toca + para añadir hasta 4 streams</span>';
+  $('#mtabs').insertAdjacentHTML('beforeend', `<button class="lay" data-lay="1" aria-label="Cambiar diseño">${lay === 'focus' ? '▦' : '▣'}</button>`);
 }
 function removeSlot(slug) {
   const i = mslots.indexOf(slug); if (i < 0) return;
@@ -414,7 +417,10 @@ const closeSheet = () => { $('#sheet').hidden = true; };
 $('#sclose').onclick = closeSheet;
 $('#sheet').addEventListener('click', e => { if (e.target.id === 'sheet') return closeSheet(); const b = e.target.closest('[data-add]'); if (b) addSlot(b.dataset.add); });
 $('#sform').addEventListener('submit', e => { e.preventDefault(); addSlot($('#sq').value); $('#sq').value = ''; });
-$('#mtabs').addEventListener('click', e => { const b = e.target.closest('[data-c]'); if (b) selectCell(b.dataset.c); });
+$('#mtabs').addEventListener('click', e => {
+  if (e.target.closest('[data-lay]')) { lay = lay === 'focus' ? 'grid' : 'focus'; try { localStorage.setItem('kicklite.mlay', lay); } catch {} return renderMTabs(); }
+  const b = e.target.closest('[data-c]'); if (b) selectCell(b.dataset.c);
+});
 $('#mgrid').addEventListener('click', e => {
   const x = e.target.closest('[data-x]'), f = e.target.closest('[data-f]'), r = e.target.closest('[data-r]'), cell = e.target.closest('.cell');
   if (x) return removeSlot(x.dataset.x);
