@@ -126,7 +126,6 @@ function show(items, msg, retry) {
 const banner = m => { $('#banner').hidden = !m; $('#banner').textContent = m || ''; };
 
 async function load() {
-  $('#title').textContent = {live:'Más vistos', favs:'Favoritos', multi:'Multistream', search:'Buscar'}[tab];
   $('#chips').hidden = tab !== 'live'; document.body.classList.toggle('sr', tab !== 'live');
   $('#searchForm').hidden = tab !== 'search';
   document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
@@ -218,8 +217,7 @@ function startStream() {
   if (window.Hls && Hls.isSupported()) {          // Android / Chrome / Firefox / iOS 17.1+
     const cfg = {lowLatencyMode:false, maxBufferLength:20, backBufferLength:300, liveSyncDurationCount: mode === 'direct' ? 2 : 3, maxLiveSyncPlaybackRate:1.1, manifestLoadingMaxRetry:1, fragLoadingMaxRetry:3};
     if (mode === 'proxy') cfg.xhrSetup = (xhr, url) => xhr.open('GET', HLSPROXY + encodeURIComponent(url) + kq(), true);
-    hls = new Hls(cfg); ring = []; ringOK = true;
-    hls.on(Hls.Events.FRAG_LOADED, (_, d) => ringAdd(d));
+    cfg.loader = teeLoader(); hls = new Hls(cfg); ring = []; ringOK = true;
     hls.on(Hls.Events.MANIFEST_PARSED, (_, d) => {
       $('#qual').innerHTML = '<option value="-1">Auto</option>' + d.levels.map((l, i) => `<option value="${i}">${l.height}p</option>`).reverse().join('');
       play2();
@@ -476,14 +474,29 @@ const CLIP_KEEP = 150;   // segundos guardados (≈ 50–90 MB según calidad)
 let ring = [], ringOK = true, drafts = [], ed = null, toastT;
 let clipDur = +localStorage.getItem('kicklite.clipdur') || 30;
 const toast = t => { const e = $('#toast'); e.textContent = t; e.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => e.hidden = true, 2600); };
-function ringAdd(d) {
-  const f = d.frag; if (!f || f.type !== 'main' || !d.payload || typeof f.sn !== 'number') return;
-  if (new Uint8Array(d.payload, 0, 1)[0] !== 0x47) { ringOK = false; return; }   // solo segmentos MPEG-TS
+function ringAdd(f, data) {
+  if (!data || !data.byteLength) return;
+  if (new Uint8Array(data, 0, 1)[0] !== 0x47) { ringOK = false; dbg('clip: segmentos no son MPEG-TS'); return; }   // solo MPEG-TS
   if (ring.some(x => x.sn === f.sn)) return;
-  ring.push({sn:f.sn, start:f.start, dur:f.duration, level:f.level, data:d.payload.slice(0)});
+  if (!ring.length) dbg('clip: buffer activo');
+  ring.push({sn:f.sn, start:f.start, dur:f.duration, level:f.level, data:data.slice(0)});
   ring.sort((p, q) => p.sn - q.sn);
   let tot = ring.reduce((s, x) => s + x.dur, 0);
   while (tot > CLIP_KEEP && ring.length > 1) tot -= ring.shift().dur;
+}
+/* Cargador de HLS.js que "copia" cada segmento de video al buffer de clips mientras se reproduce normal */
+let TeeLoader = null;
+function teeLoader() {
+  return TeeLoader ||= class extends Hls.DefaultConfig.loader {
+    load(context, config, callbacks) {
+      const f = context.frag;
+      if (f && f.type === 'main' && typeof f.sn === 'number') {
+        const ok = callbacks.onSuccess;
+        callbacks = {...callbacks, onSuccess: (r, st, c, n) => { try { ringAdd(f, r.data); } catch {} return ok(r, st, c, n); }};
+      }
+      return super.load(context, config, callbacks);
+    }
+  };
 }
 function makeClip() {
   if (!cur) return;

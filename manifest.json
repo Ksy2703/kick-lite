@@ -1,6 +1,6 @@
 {
-  "name": "Kick Lite",
-  "short_name": "Kick Lite",
+  "name": "KickLite",
+  "short_name": "KickLite",
   "description": "Cliente ligero para ver directos sin distracciones",
   "start_url": "./index.html",
   "scope": "./",
