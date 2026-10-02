@@ -1,6 +1,14 @@
 {
   "entries": [
     {
+      "v": 23,
+      "title": "Versión 23 · Ahora también en computadora",
+      "items": [
+        "Nuevo: la app se adapta a pantallas de computadora, con menú lateral, rejilla más ancha y el chat al lado del vídeo.",
+        "En el teléfono todo se ve exactamente igual que antes."
+      ]
+    },
+    {
       "v": 22,
       "title": "Versión 22 · Clips con modo Editado",
       "items": [

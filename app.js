@@ -1136,7 +1136,7 @@ load();
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('service-worker.js');
 
 /* ---------- Aviso de versión nueva: compara cada minuto la "huella" (ETag) de los archivos de la app ---------- */
-const APP_V = 22;   // sube este número en cada versión nueva y añade sus novedades arriba en changelog.json (con "v" igual a este número)
+const APP_V = 23;   // sube este número en cada versión nueva y añade sus novedades arriba en changelog.json (con "v" igual a este número)
 const SEEN = 'kicklite.seenv';   // última versión cuyas novedades ya vio esta persona
 async function notesFeed() {
   try { const r = await fetch('changelog.json', {cache:'no-store'}); if (!r.ok) return []; const j = await r.json(); return (j.entries || []).filter(e => e && +e.v > 0 && Array.isArray(e.items) && e.items.length).sort((p, q) => q.v - p.v); } catch { return []; }
