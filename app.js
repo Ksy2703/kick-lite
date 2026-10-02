@@ -560,12 +560,44 @@ function tsRebase(chunks) {   // ArrayBuffer[] → Uint8Array (mismas longitudes
   const out = new Uint8Array(arr.reduce((s, u) => s + u.length, 0)); let p = 0; arr.forEach(u => { out.set(u, p); p += u.length; });
   return out;
 }
-async function toMp4(u8) {   // u8 = TS ya reescrito con tsRebase()
+/* mux.js escribe la duración del MP4 como "máximo posible" (4294967295 ≈ 13 h a 90 kHz): los reproductores muestran 13 horas.
+   Aquí se reescribe con la duración real en mvhd (película), tkhd (pistas) y mdhd (medios). */
+function patchDur(init, dur, fb) {   // init: Uint8Array del initSegment; dur: {vide, soun} en segundos; fb: duración de respaldo
+  const dv = new DataView(init.buffer, init.byteOffset, init.byteLength);
+  const tp = p => String.fromCharCode(init[p], init[p + 1], init[p + 2], init[p + 3]);
+  const setD = (p, v1, d) => { if (v1) { dv.setUint32(p, Math.floor(d / 2 ** 32)); dv.setUint32(p + 4, d % 2 ** 32); } else dv.setUint32(p, Math.min(d, 0xFFFFFFFE)); };
+  let mvhd = 0, cur = null; const traks = [];
+  const walk = (s, e) => {
+    for (let p = s; p + 8 <= e;) {
+      const size = dv.getUint32(p), t = tp(p + 4); if (size < 8 || p + size > e) break;
+      if (t === 'moov' || t === 'mdia') walk(p + 8, p + size);
+      else if (t === 'trak') { cur = {}; traks.push(cur); walk(p + 8, p + size); }
+      else if (t === 'mvhd') mvhd = p;
+      else if (t === 'tkhd' && cur) cur.tkhd = p;
+      else if (t === 'mdhd' && cur) cur.mdhd = p;
+      else if (t === 'hdlr' && cur) cur.kind = tp(p + 16);
+      p += size;
+    }
+  };
+  walk(0, init.length);
+  if (!mvhd) return;
+  const v = p => init[p + 8], mTs = dv.getUint32(mvhd + (v(mvhd) ? 28 : 20)); let mx = 0;
+  traks.forEach(k => {
+    const d = dur[k.kind] > 0 ? dur[k.kind] : fb; if (!(d > 0)) return; mx = Math.max(mx, d);
+    if (k.tkhd) setD(k.tkhd + (v(k.tkhd) ? 36 : 28), v(k.tkhd), Math.round(d * mTs));
+    if (k.mdhd) { const o = v(k.mdhd) ? 28 : 20; setD(k.mdhd + o + 4, v(k.mdhd), Math.round(d * dv.getUint32(k.mdhd + o))); }
+  });
+  const total = dur.vide > 0 ? dur.vide : mx; if (total) setD(mvhd + (v(mvhd) ? 32 : 24), v(mvhd), Math.round(total * mTs));
+}
+async function toMp4(u8, fb) {   // u8 = TS ya reescrito con tsRebase(); fb = duración aproximada en segundos (respaldo)
   await loadMux();
-  const t = new muxjs.mp4.Transmuxer({keepOriginalTimestamps:false, baseMediaDecodeTime:0}); let init = null; const parts = [];
+  const t = new muxjs.mp4.Transmuxer({keepOriginalTimestamps:false, baseMediaDecodeTime:0}); let init = null; const parts = [], end = {};
   t.on('data', s => { if (!init) init = s.initSegment; parts.push(s.data); });
+  t.on('videoSegmentTimingInfo', i => { end.vide = Math.max(end.vide || 0, i.end.dts / 90000); });
+  t.on('audioSegmentTimingInfo', i => { end.soun = Math.max(end.soun || 0, i.end.dts / 90000); });
   t.push(u8); t.flush();                 // mux.js es síncrono: aquí ya salieron todos los datos
   if (!init || !parts.length) throw new Error('conversión vacía');
+  try { patchDur(init, end, fb); } catch (e) { dbg('duración mp4: ' + e.message); }
   return new Blob([init, ...parts], {type:'video/mp4'});
 }
 const stamp = d => { const p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`; };
@@ -629,7 +661,7 @@ async function openEditor(id) {
   const cv = $('#cvid'), mine = ed;
   ed.ts = tsRebase(d.frags.map(x => x.data)); let ok = false;
   try {
-    const blob = await toMp4(ed.ts); if (ed !== mine) return;
+    const blob = await toMp4(ed.ts, edT()); if (ed !== mine) return;
     ed.url = URL.createObjectURL(blob); cv.src = ed.url;
     ok = await new Promise(res => {
       const t = setTimeout(() => res(false), 4000);
@@ -643,17 +675,17 @@ async function openEditor(id) {
 }
 async function exportClip(kind) {
   if (!ed) return;
-  const fr = ed.d.frags.slice(ed.s, ed.e), ts = tsRebase(fr.map(x => x.data));
+  const fr = ed.d.frags.slice(ed.s, ed.e), ts = tsRebase(fr.map(x => x.data)), secs = fr.reduce((a, x) => a + x.dur, 0);
   const nm = ($('#cname').value.trim() || ed.d.slug).replace(/[^\w\-áéíóúñÁÉÍÓÚÑ ]/g, '').trim().replace(/\s+/g, '-') || ed.d.slug;
   const base = nm + '-' + stamp(ed.d.at);
   let blob, ext = 'mp4';
   const asTs = () => { ext = 'ts'; return new Blob([ts], {type:'video/mp2t'}); };
-  if (kind === 'ts' || ed.useTs) blob = asTs();
-  else { try { blob = await toMp4(ts); } catch (e) { blob = asTs(); toast('No se pudo convertir a .mp4: se guardó como .ts'); } }
+  if (kind === 'ts') blob = asTs();
+  else { try { blob = await toMp4(ts, secs); } catch (e) { blob = asTs(); toast('No se pudo convertir a .mp4: se guardó como .ts'); } }
   const file = new File([blob], `${base}.${ext}`, {type:blob.type});
   if (kind === 'share' && navigator.canShare?.({files:[file]})) { try { await navigator.share({files:[file], title:nm}); return; } catch (e) { if (e.name === 'AbortError') return; } }
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = file.name; document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 60000); toast('Clip guardado (' + ext + ')');
+  setTimeout(() => URL.revokeObjectURL(a.href), 60000); toast('Clip guardado (' + ext + ' · ' + mmss(secs) + ')');
 }
 $('#clip').onclick = makeClip;
 $('#clips').onclick = () => { showClipList(); $('#csheet').hidden = false; };
