@@ -587,8 +587,8 @@ function showClipList() {
   edClose(); $('#ced').hidden = true; $('#clist').hidden = false; $('#cdur').hidden = false; $('#ctitle').textContent = 'Clips'; renderClips();
 }
 const edT = () => ed.b[ed.b.length - 1];
-function tlPaint() {
-  const T = edT(), l = ed.b[ed.s] / T * 100, r = ed.b[ed.e] / T * 100;
+function tlPaint(fs, fe) {   // fs/fe: posiciones libres (s) solo para dibujar mientras se arrastra; el texto muestra el corte real
+  const T = edT(), l = (fs ?? ed.b[ed.s]) / T * 100, r = (fe ?? ed.b[ed.e]) / T * 100;
   $('#tlsel').style.left = l + '%'; $('#tlsel').style.width = (r - l) + '%';
   $('#tlh1').style.left = l + '%'; $('#tlh2').style.left = r + '%';
   $('#ctime').textContent = mmss(ed.b[ed.s]) + ' – ' + mmss(ed.b[ed.e]); $('#clen').textContent = Math.round(ed.b[ed.e] - ed.b[ed.s]) + ' s';
@@ -596,13 +596,20 @@ function tlPaint() {
 function tlDrag(which, ev) {
   if (!ed) return; ev.preventDefault();
   const bar = $('#tlbar'), h = ev.currentTarget, cv = $('#cvid'); h.setPointerCapture(ev.pointerId);
+  bar.classList.remove('snap'); ed.drag = true;
   const move = e => {
     const r = bar.getBoundingClientRect(), t = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) * edT();
     let k = 0, best = 1e9; ed.b.forEach((x, i) => { const d = Math.abs(x - t); if (d < best) { best = d; k = i; } });
     if (which === 1) ed.s = Math.min(k, ed.e - 1); else ed.e = Math.max(k, ed.s + 1);
-    tlPaint(); cv.currentTime = ed.b[which === 1 ? ed.s : Math.max(ed.s, ed.e - 1)];
+    // el control sigue al dedo con libertad (sin saltos); el corte real se ajusta al soltar
+    const fs = which === 1 ? Math.min(t, ed.b[ed.e - 1]) : ed.b[ed.s], fe = which === 2 ? Math.max(t, ed.b[ed.s + 1]) : ed.b[ed.e];
+    tlPaint(fs, fe); cv.currentTime = which === 1 ? fs : Math.max(fs, fe - 0.3);
   };
-  const up = () => { h.removeEventListener('pointermove', move); h.removeEventListener('pointerup', up); h.removeEventListener('pointercancel', up); };
+  const up = () => {
+    h.removeEventListener('pointermove', move); h.removeEventListener('pointerup', up); h.removeEventListener('pointercancel', up);
+    if (!ed) return; ed.drag = false; bar.classList.add('snap'); tlPaint();   // se acomoda con una animación corta
+    cv.currentTime = ed.b[ed.s];
+  };
   h.addEventListener('pointermove', move); h.addEventListener('pointerup', up); h.addEventListener('pointercancel', up);
 }
 function vodPreview() {   // vista previa de respaldo: HLS local con los mismos segmentos (la reproducción normal ya demostró que funcionan)
@@ -667,7 +674,7 @@ $('#tlbar').addEventListener('pointerdown', e => {
 const cvEl = $('#cvid');
 cvEl.addEventListener('timeupdate', () => {
   if (!ed) return;
-  if (cvEl.currentTime >= ed.b[ed.e] - 0.05 || cvEl.currentTime < ed.b[ed.s] - 0.4) cvEl.currentTime = ed.b[ed.s];
+  if (!ed.drag && (cvEl.currentTime >= ed.b[ed.e] - 0.05 || cvEl.currentTime < ed.b[ed.s] - 0.4)) cvEl.currentTime = ed.b[ed.s];
   $('#tlph').style.left = Math.min(100, cvEl.currentTime / edT() * 100) + '%';
 });
 cvEl.addEventListener('play', () => { $('#cplay').hidden = true; });
@@ -782,3 +789,28 @@ $('#searchForm').addEventListener('submit', async e => {
 authInit();
 load();
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('service-worker.js');
+
+/* ---------- Aviso de versión nueva: compara cada minuto la "huella" (ETag) de los archivos de la app ---------- */
+const WATCH = ['index.html', 'app.js', 'style.css'];
+let sig0 = null, updShown = false;
+async function sigNow() {
+  try {
+    const hs = await Promise.all(WATCH.map(async f => { const r = await fetch(f, {method:'HEAD', cache:'no-store'}); return r.headers.get('etag') || r.headers.get('last-modified') || ''; }));
+    return hs.join('|').replace(/\|/g, '') ? hs.join('|') : null;
+  } catch { return null; }
+}
+function showUpdate() {
+  if (updShown) return; updShown = true;
+  const d = document.createElement('div'); d.className = 'upd';
+  d.innerHTML = '<span></span><button>Actualizar</button><button class="x" aria-label="Cerrar">✕</button>';
+  d.firstChild.textContent = 'Estamos haciendo cambios, por favor refresca la página.' + (drafts.length ? ' Antes descarga tus clips: se pierden al refrescar.' : '');
+  d.children[1].onclick = () => location.reload();
+  d.children[2].onclick = () => { d.remove(); setTimeout(() => updShown = false, 5 * 60000); };
+  document.body.appendChild(d);
+}
+async function checkUpdate() {
+  const s = await sigNow(); if (!s) return;
+  if (sig0 === null) sig0 = s; else if (s !== sig0) showUpdate();
+}
+checkUpdate(); setInterval(checkUpdate, 60000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) checkUpdate(); });
