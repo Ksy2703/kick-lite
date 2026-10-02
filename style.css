@@ -196,6 +196,11 @@ body.sr{padding-top:calc(78px + env(safe-area-inset-top))}
 .updbox{width:100%;max-width:340px;padding:20px;border-radius:16px;background:var(--card);border:1px solid var(--g);text-align:center}
 .updbox h3{font-size:18px;margin-bottom:8px}
 .updbox p{color:var(--dim);font-size:14px;margin-bottom:16px}
+.updlog{text-align:left;margin:0 0 14px;padding:12px 14px;border-radius:12px;background:#0f1a13;border:1px solid #22382a;max-height:38vh;overflow:auto;font-size:13px;color:#d8e6dc}
+.updlog h4{font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--g);margin-bottom:6px}
+.updlog b{display:block;margin:8px 0 2px;font-size:13px}
+.updlog ul{margin:2px 0 0;padding-left:18px}
+.updlog li{margin:4px 0;line-height:1.35}
 .updact{display:flex;flex-direction:column;gap:8px}
 .updact button{padding:11px;border-radius:12px;font-weight:700}
 .updact .go{background:var(--g);color:#000}

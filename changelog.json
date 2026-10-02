@@ -1,0 +1,12 @@
+{
+  "entries": [
+    {
+      "v": 21,
+      "title": "Versión 21",
+      "items": [
+        "Hemos arreglado los clips en MP4: ahora se ven con imagen al descargarlos o compartirlos (antes podían salir en negro y solo con sonido).",
+        "El aviso de actualización ahora te cuenta qué ha cambiado antes de refrescar."
+      ]
+    }
+  ]
+}

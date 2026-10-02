@@ -34,3 +34,9 @@ compartir o descargar .mp4. Los clips viven en memoria: descárgalos antes de ce
    Permisos (scopes): user:read y chat:write.
 2. Vercel → Settings → Environment Variables: KICK_CLIENT_ID y KICK_CLIENT_SECRET → Redeploy.
 3. En el chat del reproductor aparecerá "Iniciar sesión con Kick". Cada persona entra con su cuenta.
+
+## Novedades al actualizar (changelog)
+Cuando hay versión nueva, el aviso "Estamos haciendo cambios" muestra las novedades de `changelog.json`.
+Para cada versión: sube `APP_V` en app.js (y `CACHE` en service-worker.js), y añade ARRIBA en changelog.json una entrada
+con `"v"` = el nuevo número y una lista `items` con frases tipo "Hemos arreglado ...". Solo se muestran las entradas más nuevas
+que la versión que el usuario tiene abierta.

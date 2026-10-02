@@ -589,6 +589,33 @@ function patchDur(init, dur, fb) {   // init: Uint8Array del initSegment; dur: {
   });
   const total = dur.vide > 0 ? dur.vide : mx; if (total) setD(mvhd + (v(mvhd) ? 32 : 24), v(mvhd), Math.round(total * mTs));
 }
+/* Kick emite H.264 perfil High. mux.js escribe el avcC sin los 4 bytes finales que ese perfil exige (formato de croma y profundidad de bits):
+   ffmpeg/Chrome lo toleran, pero muchas galerías de móvil, WhatsApp, etc. muestran el video en negro (solo suena el audio). Aquí se añaden. */
+function fixAvcC(stsd) {
+  try {
+    const u32 = p => ((stsd[p] << 24) | (stsd[p + 1] << 16) | (stsd[p + 2] << 8) | stsd[p + 3]) >>> 0;
+    let a = -1; for (let i = 0; i + 4 <= stsd.length; i++) if (stsd[i] === 0x61 && stsd[i + 1] === 0x76 && stsd[i + 2] === 0x63 && stsd[i + 3] === 0x43) { a = i - 4; break; }   // 'avcC'
+    if (a < 0) return stsd;
+    const aSize = u32(a), prof = stsd[a + 9];
+    if (![100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135].includes(prof)) return stsd;
+    let q = a + 8 + 5, nS = stsd[q] & 31; q++;
+    const sps0 = q + 2, spsLen = (stsd[q] << 8) | stsd[q + 1];
+    for (let i = 0; i < nS; i++) q += 2 + ((stsd[q] << 8) | stsd[q + 1]);
+    const nP = stsd[q]; q++; for (let i = 0; i < nP; i++) q += 2 + ((stsd[q] << 8) | stsd[q + 1]);
+    if (q !== a + aSize) return stsd;   // ya trae el bloque extra (o estructura rara): no tocar
+    const rb = []; for (let i = sps0 + 1; i < sps0 + spsLen; i++) { if (i >= sps0 + 3 && stsd[i] === 3 && stsd[i - 1] === 0 && stsd[i - 2] === 0) continue; rb.push(stsd[i]); }   // quita bytes de emulación
+    let bp = 24; const bit = () => (rb[bp >> 3] >> (7 - (bp++ & 7))) & 1;
+    const ue = () => { let z = 0; while (!bit() && z < 32) z++; let v = 0; for (let i = 0; i < z; i++) v = v * 2 + bit(); return 2 ** z - 1 + v; };
+    ue();                                    // seq_parameter_set_id
+    const chroma = ue(); if (chroma === 3) bit();
+    const bl = ue(), bc = ue();
+    const ext = [0xFC | (chroma & 3), 0xF8 | (bl & 7), 0xF8 | (bc & 7), 0];
+    const out = new Uint8Array(stsd.length + 4); out.set(stsd.subarray(0, q), 0); out.set(ext, q); out.set(stsd.subarray(q), q + 4);
+    const dv = new DataView(out.buffer); dv.setUint32(a, aSize + 4); dv.setUint32(0, u32(0) + 4);
+    const v = 16; if (String.fromCharCode(...stsd.subarray(v + 4, v + 8)) === 'avc1') dv.setUint32(v, u32(v) + 4);   // avc1 es la primera entrada del stsd
+    return out;
+  } catch (e) { return stsd; }
+}
 /* Convierte el MP4 "fragmentado" de mux.js en un MP4 normal (moov + mdat con tablas completas).
    Muchas galerías de móvil, WhatsApp, etc. no muestran el video de los MP4 fragmentados (se ve negro y solo suena el audio). */
 function flatMp4(init, parts) {
@@ -613,7 +640,7 @@ function flatMp4(init, parts) {
     const mdhdN = find(init, mdia.s + 8, mdia.e, 'mdhd'), hdlrN = find(init, mdia.s + 8, mdia.e, 'hdlr'), minf = find(init, mdia.s + 8, mdia.e, 'minf');
     const stbl = find(init, minf.s + 8, minf.e, 'stbl'), stsd = find(init, stbl.s + 8, stbl.e, 'stsd');
     const tkhd = init.slice(tkhdN.s, tkhdN.e), mdhd = init.slice(mdhdN.s, mdhdN.e), id = u32(tkhd, tkhd[8] ? 28 : 20);
-    T[id] = {id, kind:tag(init, hdlrN.s + 16), tkhd, mdhd, hdlr:init.slice(hdlrN.s, hdlrN.e), stsd:init.slice(stsd.s, stsd.e), ts:u32(mdhd, mdhd[8] ? 28 : 20),
+    T[id] = {id, kind:tag(init, hdlrN.s + 16), tkhd, mdhd, hdlr:init.slice(hdlrN.s, hdlrN.e), stsd:fixAvcC(init.slice(stsd.s, stsd.e)), ts:u32(mdhd, mdhd[8] ? 28 : 20),
       minf:kids(init, minf.s + 8, minf.e).filter(k => k.t !== 'stbl').map(k => init.slice(k.s, k.e)), dur:[], size:[], sync:[], cts:[], chunks:[], t0:null};
     order.push(id);
   });
@@ -940,6 +967,14 @@ load();
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('service-worker.js');
 
 /* ---------- Aviso de versión nueva: compara cada minuto la "huella" (ETag) de los archivos de la app ---------- */
+const APP_V = 21;   // sube este número en cada versión nueva y añade sus novedades arriba en changelog.json (con "v" igual a este número)
+async function newNotes() {   // novedades publicadas después de la versión que tienes abierta (máx. 3 entradas)
+  try {
+    const r = await fetch('changelog.json', {cache:'no-store'}); if (!r.ok) return [];
+    const j = await r.json();
+    return (j.entries || []).filter(e => e.v > APP_V && Array.isArray(e.items) && e.items.length).slice(0, 3);
+  } catch { return []; }
+}
 const WATCH = ['index.html', 'app.js', 'style.css'];
 let sig0 = null, sigSeen = null;
 async function sigNow() {
@@ -961,8 +996,19 @@ function showUpdate() {   // ventana en el centro de la pantalla, aunque estés 
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});   // en pantalla completa no se vería la ventana
   const warn = drafts.length ? ` Tienes ${drafts.length} clip${drafts.length > 1 ? 's' : ''} sin descargar: descárgalo${drafts.length > 1 ? 's' : ''} antes, porque se pierden al refrescar.` : '';
   const m = document.createElement('div'); m.className = 'updm'; m.setAttribute('role', 'dialog'); m.setAttribute('aria-modal', 'true');
-  m.innerHTML = '<div class="updbox"><h3>Estamos haciendo cambios</h3><p></p><div class="updact"><button class="go">Refrescar ahora</button><button class="later">Más tarde</button></div></div>';
+  m.innerHTML = '<div class="updbox"><h3>Estamos haciendo cambios</h3><div class="updlog" hidden></div><p></p><div class="updact"><button class="go">Refrescar ahora</button><button class="later">Más tarde</button></div></div>';
   m.querySelector('p').textContent = 'Por favor refresca la página para cargar la versión nueva.' + warn;
+  newNotes().then(es => {   // el aviso sale al instante; las novedades se rellenan en cuanto llegan
+    if (!es.length || !m.isConnected) return;
+    const box = m.querySelector('.updlog'); box.innerHTML = '<h4>Novedades</h4>';
+    es.forEach(e => {
+      if (e.title) { const t = document.createElement('b'); t.textContent = e.title; box.appendChild(t); }
+      const ul = document.createElement('ul');
+      e.items.forEach(x => { const li = document.createElement('li'); li.textContent = x; ul.appendChild(li); });
+      box.appendChild(ul);
+    });
+    box.hidden = false;
+  });
   m.querySelector('.go').onclick = () => location.reload();
   m.querySelector('.later').onclick = () => { m.remove(); showUpdateBar(); };
   document.body.appendChild(m);
