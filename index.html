@@ -57,11 +57,34 @@
     <div id="clist"></div>
     <div id="cdur" class="cdur">Duración al marcar: <button data-d="15">15 s</button><button data-d="30">30 s</button><button data-d="60">60 s</button></div>
     <div id="ced" hidden>
-      <div class="cprev"><video id="cvid" playsinline muted></video><button id="cplay" class="cplay" aria-label="Reproducir">▶</button><button id="cmute" class="cmute" aria-label="Sonido">🔇</button></div>
+      <div class="cprev" id="cprev"><video id="cvid" playsinline muted></video><canvas id="cfxv" class="cfxv" hidden></canvas><button id="cplay" class="cplay" aria-label="Reproducir">▶</button><button id="cmute" class="cmute" aria-label="Sonido">🔇</button></div>
       <div id="tlbar" class="tlbar"><div id="tlsel" class="tlsel"></div><div id="tlph" class="tlph"></div><div id="tlh1" class="tlh"></div><div id="tlh2" class="tlh"></div></div>
       <div class="tlt"><span id="ctime"></span><b id="clen"></b></div>
+      <div id="cmode" class="cmode" role="group" aria-label="Modo de exportación"><button data-m="clean" class="on">Limpio</button><button data-m="edit">Editado</button></div>
+      <p id="cmhint" class="cmhint"></p>
+      <div id="cfx" class="cfx" hidden>
+        <div class="fxr"><span>Formato</span><div class="fxs" data-k="fmt"><button data-v="16:9">16:9 Horizontal</button><button data-v="9:16">9:16 Vertical</button></div></div>
+        <div class="fxr" id="cfit"><span>Encuadre</span><div class="fxs" data-k="fit"><button data-v="blur">Ajustar</button><button data-v="crop">Recortar</button></div></div>
+        <input id="ctext" class="ctext" maxlength="80" placeholder="Texto estilo meme (ej: ¡NO LO PUEDO CREER!)" autocomplete="off" autocapitalize="characters">
+        <div class="fxr"><span>Posición</span><div class="fxs" data-k="pos"><button data-v="top">Arriba</button><button data-v="mid">Centro</button><button data-v="bottom">Abajo</button></div></div>
+        <div class="fxr"><span>Estilo</span><div class="fxs" data-k="style"><button data-v="outline">Borde</button><button data-v="box">Fondo</button></div></div>
+        <div class="fxr"><span>Color</span><div class="fxs fxc" data-k="color"><button data-v="#ffffff" style="--c:#ffffff" aria-label="Blanco"></button><button data-v="#ffe600" style="--c:#ffe600" aria-label="Amarillo"></button><button data-v="#53fc18" style="--c:#53fc18" aria-label="Verde"></button><button data-v="#ff4d6a" style="--c:#ff4d6a" aria-label="Rojo"></button></div></div>
+        <div class="fxr"><span>Animación</span><div class="fxs" data-k="anim"><button data-v="pop">Pop</button><button data-v="pulse">Latido</button><button data-v="shake">Temblor</button><button data-v="none">Fija</button></div></div>
+      </div>
       <input id="cname" class="cname" maxlength="60" placeholder="Título del clip" autocomplete="off">
       <div class="cact"><button id="cshare">Compartir</button><button id="cdl">Descargar MP4</button><button id="cts">.ts</button><button id="cback">‹ Volver</button></div>
+    </div>
+  </div>
+</div>
+<div id="fxov" class="updm fxov" hidden role="dialog" aria-modal="true">
+  <div class="updbox">
+    <h3 id="fxt">Creando tu clip…</h3>
+    <p id="fxs">Mantén esta pantalla abierta.</p>
+    <div class="fxbar" id="fxbarw"><i id="fxbar"></i></div>
+    <div class="updact">
+      <button id="fxshare" class="go" hidden>Compartir</button>
+      <button id="fxsave" class="go" hidden>Guardar</button>
+      <button id="fxcancel" class="later">Cancelar</button>
     </div>
   </div>
 </div>

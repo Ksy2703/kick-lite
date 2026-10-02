@@ -651,8 +651,9 @@ function flatMp4(init, parts) {
   const all = new Uint8Array(parts.reduce((q, x) => q + x.length, 0)); { let o = 0; parts.forEach(x => { all.set(x, o); o += x.length; }); }
   const G = [];
   kids(all, 0, all.length).filter(b => b.t === 'moof').forEach(mf => {
-    const trafs = kids(all, mf.s + 8, mf.e).filter(k => k.t === 'traf'); if (trafs.length !== 1) throw new Error('moof con varias pistas');
-    const tr = trafs[0], tfhd = find(all, tr.s + 8, tr.e, 'tfhd'), tfdt = find(all, tr.s + 8, tr.e, 'tfdt'), trun = find(all, tr.s + 8, tr.e, 'trun');
+    const trafs = kids(all, mf.s + 8, mf.e).filter(k => k.t === 'traf'); if (!trafs.length) throw new Error('moof sin pistas');
+    trafs.forEach(tr => {   // mux.js trae 1 pista por moof; MediaRecorder trae audio y video juntos
+    const tfhd = find(all, tr.s + 8, tr.e, 'tfhd'), tfdt = find(all, tr.s + 8, tr.e, 'tfdt'), trun = find(all, tr.s + 8, tr.e, 'trun');
     if (!tfhd || !trun) throw new Error('traf incompleto');
     const id = u32(all, tfhd.s + 12), K = T[id]; if (!K) throw new Error('pista desconocida');
     const tf = (all[tfhd.s + 9] << 16) | (all[tfhd.s + 10] << 8) | all[tfhd.s + 11], dd = trex[id] || {d:0, z:0, f:0};
@@ -674,6 +675,7 @@ function flatMp4(init, parts) {
     }
     if (pos > all.length) throw new Error('datos incompletos');
     K.chunks.push(n); G.push({K, pos:start, len:pos - start});
+    });
   });
   const ids = order.filter(id => T[id].dur.length); if (!ids.length) throw new Error('sin muestras');
 
@@ -703,6 +705,15 @@ function flatMp4(init, parts) {
   const hdr = new Uint8Array(8); new DataView(hdr.buffer).setUint32(0, rel + 8); hdr.set([0x6d, 0x64, 0x61, 0x74], 4);
   return new Blob([ft, moovOut, hdr, ...G.map(g => all.subarray(g.pos, g.pos + g.len))], {type:'video/mp4'});
 }
+async function flatRec(blob) {   // MediaRecorder entrega MP4 "fragmentado": se aplana (moov + mdat) para que lo abran galerías, WhatsApp, etc.
+  try {
+    const d = new Uint8Array(await blob.arrayBuffer()), u32 = p => ((d[p] << 24) | (d[p + 1] << 16) | (d[p + 2] << 8) | d[p + 3]) >>> 0;
+    let p = 0, mo = -1;
+    while (p + 8 <= d.length) { const z = u32(p); if (z < 8) break; if (d[p + 4] === 0x6d && d[p + 5] === 0x6f && d[p + 6] === 0x6f && d[p + 7] === 0x66) { mo = p; break; } p += z; }   // 'moof'
+    if (mo < 0) return blob;
+    return flatMp4(d.subarray(0, mo), [d.subarray(mo)]);
+  } catch (e) { dbg('aplanar: ' + e.message); return blob; }
+}
 async function toMp4(u8, fb) {   // u8 = TS ya reescrito con tsRebase(); fb = duración aproximada en segundos (respaldo)
   await loadMux();
   const t = new muxjs.mp4.Transmuxer({keepOriginalTimestamps:false, baseMediaDecodeTime:0}); let init = null; const parts = [], end = {};
@@ -726,6 +737,7 @@ function renderClips() {
   document.querySelectorAll('#cdur button').forEach(b => b.classList.toggle('on', +b.dataset.d === clipDur));
 }
 function edClose() {
+  cancelAnimationFrame(fxRaf); $('#cfxv').hidden = true;
   const cv = $('#cvid'); cv.pause();
   if (ed) { if (ed.hls) ed.hls.destroy(); if (ed.url) URL.revokeObjectURL(ed.url); ed.urls.forEach(u => URL.revokeObjectURL(u)); }
   cv.removeAttribute('src'); cv.load(); ed = null;
@@ -773,6 +785,7 @@ async function openEditor(id) {
   ed = {d, b, s:0, e:d.frags.length, url:'', urls:[], hls:null, useTs:false, ts:null};
   $('#clist').hidden = true; $('#cdur').hidden = true; $('#ced').hidden = false; $('#ctitle').textContent = 'Editar clip';
   $('#cname').value = ''; $('#cplay').hidden = true; tlPaint();
+  fx.text = ''; $('#ctext').value = ''; paintMode();
   const cv = $('#cvid'), mine = ed;
   ed.ts = tsRebase(d.frags.map(x => x.data)); let ok = false;
   try {
@@ -788,19 +801,26 @@ async function openEditor(id) {
   if (!ok) { ed.useTs = true; if (ed.url) { URL.revokeObjectURL(ed.url); ed.url = ''; } vodPreview(); toast('Modo compatible: este clip se exportará como .ts'); }
   cv.play().catch(() => { $('#cplay').hidden = false; });
 }
+async function deliver(blob, base, ext, kind, title, secs) {   // compartir (si el móvil lo permite) o descargar
+  const file = new File([blob], `${base}.${ext}`, {type:blob.type});
+  if (kind === 'share' && navigator.canShare?.({files:[file]})) { try { await navigator.share({files:[file], title}); return; } catch (e) { if (e.name === 'AbortError') return; } }
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = file.name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 60000); toast('Clip guardado (' + ext + ' · ' + mmss(secs) + ')');
+}
 async function exportClip(kind) {
   if (!ed) return;
   const fr = ed.d.frags.slice(ed.s, ed.e), ts = tsRebase(fr.map(x => x.data)), secs = fr.reduce((a, x) => a + x.dur, 0);
   const nm = ($('#cname').value.trim() || ed.d.slug).replace(/[^\w\-áéíóúñÁÉÍÓÚÑ ]/g, '').trim().replace(/\s+/g, '-') || ed.d.slug;
   const base = nm + '-' + stamp(ed.d.at);
+  if (kind !== 'ts' && clipMode === 'edit') {
+    if (fx.fmt === '16:9' && !fx.text.trim()) toast('Sin cambios en Editado: se exporta igual que el modo Limpio');
+    else return exportEdited(kind, ts, secs, base, nm);
+  }
   let blob, ext = 'mp4';
   const asTs = () => { ext = 'ts'; return new Blob([ts], {type:'video/mp2t'}); };
   if (kind === 'ts') blob = asTs();
   else { try { blob = await toMp4(ts, secs); } catch (e) { blob = asTs(); toast('No se pudo convertir a .mp4: se guardó como .ts'); } }
-  const file = new File([blob], `${base}.${ext}`, {type:blob.type});
-  if (kind === 'share' && navigator.canShare?.({files:[file]})) { try { await navigator.share({files:[file], title:nm}); return; } catch (e) { if (e.name === 'AbortError') return; } }
-  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = file.name; document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 60000); toast('Clip guardado (' + ext + ' · ' + mmss(secs) + ')');
+  await deliver(blob, base, ext, kind, nm, secs);
 }
 $('#clip').onclick = makeClip;
 $('#clips').onclick = () => { showClipList(); $('#csheet').hidden = false; };
@@ -832,6 +852,155 @@ $('#cmute').onclick = () => { cvEl.muted = !cvEl.muted; $('#cmute').textContent 
 $('#cshare').onclick = () => exportClip('share');
 $('#cdl').onclick = () => exportClip('mp4');
 $('#cts').onclick = () => exportClip('ts');
+
+/* ---------- Modo Editado: formato 9:16 + texto estilo meme ----------
+   Limpio = el clip tal cual (MP4 original, sin recodificar).
+   Editado = se dibuja cada fotograma en un canvas (recorte/fondo + texto) y se graba con MediaRecorder: dura lo mismo que el clip. */
+const FXLS = 'kicklite.clipfx';
+let clipMode = localStorage.getItem('kicklite.clipmode') === 'edit' ? 'edit' : 'clean', fxRaf = 0, fxBusy = false, fxTiny = null;
+let fx = Object.assign({fmt:'16:9', fit:'blur', pos:'bottom', style:'outline', color:'#ffffff', anim:'pop'}, (() => { try { return JSON.parse(localStorage.getItem(FXLS)) || {}; } catch { return {}; } })(), {text:''});
+const fxSave = () => { try { const {text, ...r} = fx; localStorage.setItem(FXLS, JSON.stringify(r)); } catch {} };
+function fxSize(vw, vh, full) {   // tamaño del lienzo: vertical 720×1280; horizontal conserva la proporción del video (máx. 1280 de ancho)
+  if (fx.fmt === '9:16') return full ? [720, 1280] : [360, 640];
+  const w = Math.min(vw || 1280, full ? 1280 : 640), h = vw && vh ? Math.round(w * vh / vw) : Math.round(w * 9 / 16);
+  return [w & ~1, h & ~1];
+}
+function fxWrap(ctx, txt, maxW) {
+  const out = []; let cur = '';
+  txt.split(/\s+/).forEach(w => {
+    const t = cur ? cur + ' ' + w : w;
+    if (cur && ctx.measureText(t).width > maxW) { out.push(cur); cur = w; } else cur = t;
+  });
+  if (cur) out.push(cur); return out;
+}
+function fxRR(ctx, x, y, w, h, r) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
+function fxText(ctx, W, H, t) {
+  const txt = fx.text.trim().toUpperCase(); if (!txt) return;
+  const vert = fx.fmt === '9:16', font = z => `900 ${z}px Impact, "Arial Black", "Helvetica Neue", Arial, sans-serif`;
+  let size = Math.round(W * (vert ? 0.105 : 0.07)), lines;
+  ctx.save(); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (;;) { ctx.font = font(size); lines = fxWrap(ctx, txt, W * 0.88); if (lines.length <= 3 || size < W * 0.04) break; size -= 2; }
+  const lh = size * 1.14, cy = H * ({top:vert ? 0.14 : 0.13, mid:0.5, bottom:vert ? 0.76 : 0.86}[fx.pos] || 0.86);
+  // animación
+  let sc = 1, rot = 0, dx = 0, dy = 0;
+  if (fx.anim === 'pop') { const k = Math.min(1, t / 0.4), c1 = 1.70158, e = 1 + (c1 + 1) * Math.pow(k - 1, 3) + c1 * Math.pow(k - 1, 2); sc = Math.max(0.01, 0.2 + 0.8 * e) * (1 + (k >= 1 ? 0.02 * Math.sin(t * 5) : 0)); }
+  else if (fx.anim === 'pulse') sc = 1 + 0.07 * Math.sin(t * Math.PI * 4);
+  else if (fx.anim === 'shake') { rot = Math.sin(t * 31) * 0.025; dx = Math.sin(t * 47) * W * 0.004; dy = Math.cos(t * 53) * W * 0.004; }
+  ctx.translate(W / 2 + dx, cy + dy); ctx.rotate(rot); ctx.scale(sc, sc);
+  const top = -(lines.length * lh) / 2 + lh / 2;
+  if (fx.style === 'box') {
+    const pad = size * 0.28; ctx.fillStyle = 'rgba(0,0,0,.58)';
+    lines.forEach((l, i) => { const w = ctx.measureText(l).width + pad * 2; fxRR(ctx, -w / 2, top + i * lh - lh / 2 + lh * 0.04, w, lh * 0.92, size * 0.22); ctx.fill(); });
+  }
+  ctx.lineJoin = 'round'; ctx.lineWidth = size * (fx.style === 'box' ? 0.05 : 0.17); ctx.strokeStyle = '#000';
+  lines.forEach((l, i) => { const y = top + i * lh; if (fx.style !== 'box') ctx.strokeText(l, 0, y); else { ctx.shadowColor = 'rgba(0,0,0,.6)'; ctx.shadowBlur = size * 0.1; } ctx.fillStyle = fx.color; ctx.fillText(l, 0, y); ctx.shadowBlur = 0; });
+  ctx.restore();
+}
+function fxDraw(ctx, W, H, vid, t) {   // un fotograma: video (ajustado/recortado) + texto
+  const vw = vid.videoWidth, vh = vid.videoHeight;
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  if (vw && vh && vid.readyState >= 2) {
+    if (fx.fmt !== '9:16') ctx.drawImage(vid, 0, 0, W, H);
+    else if (fx.fit === 'crop') { const k = Math.max(W / vw, H / vh), dw = vw * k, dh = vh * k; ctx.drawImage(vid, (W - dw) / 2, (H - dh) / 2, dw, dh); }
+    else {   // "Ajustar": video entero en el centro sobre un fondo difuminado (se reduce a miniatura y se estira: barato y funciona en todos los móviles)
+      fxTiny ||= document.createElement('canvas'); fxTiny.width = 27; fxTiny.height = 48;
+      const tc = fxTiny.getContext('2d'), k = Math.max(27 / vw, 48 / vh); tc.drawImage(vid, (27 - vw * k) / 2, (48 - vh * k) / 2, vw * k, vh * k);
+      ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high'; ctx.drawImage(fxTiny, 0, 0, W, H);
+      ctx.fillStyle = 'rgba(0,0,0,.4)'; ctx.fillRect(0, 0, W, H);
+      const dh = vh * (W / vw); ctx.drawImage(vid, 0, (H - dh) / 2, W, dh);
+    }
+  }
+  fxText(ctx, W, H, t);
+}
+function fxLayout() {   // proporción y tamaño de la vista previa
+  const box = $('#cprev'), cv = $('#cvid'), vert = fx.fmt === '9:16', on = clipMode === 'edit';
+  const [W, H] = fxSize(cv.videoWidth, cv.videoHeight, false);
+  box.classList.toggle('fx', on); box.style.setProperty('--ar', (W / H).toFixed(4)); box.style.setProperty('--hh', vert ? '36vh' : '28vh');
+  const c = $('#cfxv'); c.hidden = !on; if (on) { if (c.width !== W) c.width = W; if (c.height !== H) c.height = H; }
+}
+function fxPreview() {
+  cancelAnimationFrame(fxRaf);
+  if (!ed || clipMode !== 'edit') return;
+  const cv = $('#cvid'), c = $('#cfxv'), ctx = c.getContext('2d');
+  const tick = () => { if (!ed || clipMode !== 'edit') return; fxDraw(ctx, c.width, c.height, cv, cv.currentTime || 0); fxRaf = requestAnimationFrame(tick); };
+  tick();
+}
+function paintMode() {
+  const on = clipMode === 'edit';
+  document.querySelectorAll('#cmode button').forEach(b => b.classList.toggle('on', b.dataset.m === clipMode));
+  $('#cfx').hidden = !on; $('#cts').hidden = on; $('#cdl').textContent = on ? 'Descargar editado' : 'Descargar MP4';
+  $('#cmhint').textContent = on ? 'Se vuelve a generar el clip con tus cambios y tarda lo que dura el clip.' : 'Exporta el clip tal cual: horizontal, resolución original y sin texto.';
+  document.querySelectorAll('#cfx .fxs').forEach(g => g.querySelectorAll('button').forEach(b => b.classList.toggle('on', fx[g.dataset.k] === b.dataset.v)));
+  $('#cfit').hidden = fx.fmt !== '9:16';
+  fxLayout(); fxPreview();
+}
+$('#cmode').addEventListener('click', e => { const b = e.target.closest('[data-m]'); if (!b) return; clipMode = b.dataset.m; try { localStorage.setItem('kicklite.clipmode', clipMode); } catch {} paintMode(); });
+$('#cfx').addEventListener('click', e => { const b = e.target.closest('.fxs button'); if (!b) return; fx[b.parentNode.dataset.k] = b.dataset.v; fxSave(); paintMode(); });
+$('#ctext').addEventListener('input', e => { fx.text = e.target.value; });
+$('#cvid').addEventListener('loadedmetadata', fxLayout);
+
+function fxOv(mode, msg, pct) {   // ventana de progreso / resultado
+  const o = $('#fxov'); o.hidden = !mode; if (!mode) return;
+  $('#fxt').textContent = mode === 'work' ? 'Creando tu clip…' : '¡Clip listo!';
+  if (msg) $('#fxs').textContent = msg;
+  $('#fxbarw').hidden = mode !== 'work'; if (pct != null) $('#fxbar').style.width = Math.round(pct * 100) + '%';
+  $('#fxshare').hidden = $('#fxsave').hidden = mode !== 'done'; $('#fxcancel').textContent = mode === 'done' ? 'Cerrar' : 'Cancelar';
+}
+async function exportEdited(kind, ts, secs, base, nm) {
+  if (fxBusy) return;
+  if (!window.MediaRecorder || !HTMLCanvasElement.prototype.captureStream) return toast('Este navegador no puede crear clips editados. Usa el modo Limpio.');
+  const AC = window.AudioContext || window.webkitAudioContext; let ac = null;
+  try { ac = new AC(); ac.resume(); } catch {}   // se crea aquí, con el toque del usuario (iOS lo exige para el audio)
+  fxBusy = true; let cancelled = false, vid = null, url = '', rec = null, timer = 0, raf = 0;
+  $('#fxcancel').onclick = () => { cancelled = true; if (rec && rec.state !== 'inactive') rec.stop(); else fxOv(false); };
+  fxOv('work', 'Preparando… mantén esta pantalla abierta.', 0);
+  try {
+    const mp4 = await toMp4(ts, secs), buf = ac ? await mp4.arrayBuffer() : null;
+    url = URL.createObjectURL(mp4);
+    vid = document.createElement('video'); vid.muted = true; vid.playsInline = true; vid.setAttribute('playsinline', ''); vid.preload = 'auto'; vid.src = url;
+    vid.style.cssText = 'position:fixed;left:0;top:0;width:2px;height:2px;opacity:.01;pointer-events:none'; document.body.appendChild(vid);
+    await new Promise((ok, no) => { vid.onloadeddata = ok; vid.onerror = () => no(new Error('no se pudo leer el clip')); setTimeout(() => no(new Error('tiempo de espera agotado')), 10000); });
+    const dur = isFinite(vid.duration) && vid.duration > 0 ? vid.duration : secs, [W, H] = fxSize(vid.videoWidth, vid.videoHeight, true);
+    const cv = document.createElement('canvas'); cv.width = W; cv.height = H; const ctx = cv.getContext('2d'), stream = cv.captureStream(30);
+    let src = null;
+    if (ac && buf) {
+      try {
+        const dest = ac.createMediaStreamDestination(); src = ac.createBufferSource(); src.buffer = await ac.decodeAudioData(buf.slice(0)); src.connect(dest);
+        dest.stream.getAudioTracks().forEach(t => stream.addTrack(t));
+      } catch (e) { dbg('audio: ' + e.message); src = null; toast('No se pudo leer el audio: el clip se exportará sin sonido'); }
+    }
+    const mime = ['video/mp4;codecs=avc1.640028,mp4a.40.2', 'video/mp4;codecs=avc1.4D401F,mp4a.40.2', 'video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4;codecs=avc1,mp4a.40.2', 'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'].find(m => MediaRecorder.isTypeSupported(m)) || '';   // solo MP4 con H.264/AAC (el MP4 "genérico" de Chrome puede traer VP9/Opus, que muchas apps no abren)
+    rec = new MediaRecorder(stream, {...(mime ? {mimeType:mime} : {}), videoBitsPerSecond:W * H > 1e6 ? 6e6 : 4e6, audioBitsPerSecond:128000});
+    const chunks = []; rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+    const stopped = new Promise(r => rec.onstop = r);
+    const finish = () => { cancelAnimationFrame(raf); clearTimeout(timer); setTimeout(() => { if (rec.state !== 'inactive') rec.stop(); }, 250); };
+    vid.currentTime = 0; fxDraw(ctx, W, H, vid, 0);
+    rec.start(1000); await vid.play(); if (src) src.start();
+    fxOv('work', 'Grabando con tus cambios… mantén esta pantalla abierta.', 0);
+    const loop = () => {
+      fxDraw(ctx, W, H, vid, vid.currentTime); fxOv('work', null, Math.min(1, vid.currentTime / dur));
+      if (vid.ended || vid.currentTime >= dur - 0.04 || cancelled) finish(); else raf = requestAnimationFrame(loop);
+    };
+    vid.onended = () => { fxDraw(ctx, W, H, vid, dur); finish(); };
+    timer = setTimeout(finish, (dur + 5) * 1000); loop();
+    await stopped;
+    stream.getTracks().forEach(t => t.stop());
+    if (cancelled) { fxOv(false); return; }
+    const type = (rec.mimeType || mime || 'video/webm').split(';')[0], ext = /mp4/.test(type) ? 'mp4' : 'webm';
+    let blob = new Blob(chunks, {type}); if (ext === 'mp4') blob = await flatRec(blob);
+    if (!blob.size) throw new Error('el archivo salió vacío');
+    const name = base + '-editado';
+    fxOv('done', 'Formato ' + fx.fmt + ' · ' + mmss(dur) + ' · .' + ext + (ext === 'webm' ? ' (tu navegador no graba .mp4)' : ''));
+    $('#fxshare').onclick = () => deliver(blob, name, ext, 'share', nm, dur);
+    $('#fxsave').onclick = () => deliver(blob, name, ext, 'mp4', nm, dur);
+    $('#fxcancel').onclick = () => fxOv(false);
+  } catch (e) {
+    dbg('editado: ' + e.message); if (!cancelled) toast('No se pudo crear el clip editado (' + e.message + '). Prueba el modo Limpio.'); fxOv(false);
+  } finally {
+    fxBusy = false; cancelAnimationFrame(raf); clearTimeout(timer);
+    if (vid) { vid.pause(); vid.removeAttribute('src'); vid.load(); vid.remove(); } if (url) URL.revokeObjectURL(url); if (ac) ac.close().catch(() => {});
+  }
+}
 renderClips();
 
 /* ---------- Iniciar sesión con Kick y escribir en el chat (opcional: requiere api/auth.js + app de Kick) ---------- */
@@ -967,14 +1136,35 @@ load();
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('service-worker.js');
 
 /* ---------- Aviso de versión nueva: compara cada minuto la "huella" (ETag) de los archivos de la app ---------- */
-const APP_V = 21;   // sube este número en cada versión nueva y añade sus novedades arriba en changelog.json (con "v" igual a este número)
-async function newNotes() {   // novedades publicadas después de la versión que tienes abierta (máx. 3 entradas)
-  try {
-    const r = await fetch('changelog.json', {cache:'no-store'}); if (!r.ok) return [];
-    const j = await r.json();
-    return (j.entries || []).filter(e => e.v > APP_V && Array.isArray(e.items) && e.items.length).slice(0, 3);
-  } catch { return []; }
+const APP_V = 22;   // sube este número en cada versión nueva y añade sus novedades arriba en changelog.json (con "v" igual a este número)
+const SEEN = 'kicklite.seenv';   // última versión cuyas novedades ya vio esta persona
+async function notesFeed() {
+  try { const r = await fetch('changelog.json', {cache:'no-store'}); if (!r.ok) return []; const j = await r.json(); return (j.entries || []).filter(e => e && +e.v > 0 && Array.isArray(e.items) && e.items.length).sort((p, q) => q.v - p.v); } catch { return []; }
 }
+const newNotes = async () => (await notesFeed()).filter(e => e.v > APP_V).slice(0, 3);   // novedades aún sin cargar (se muestran ANTES de refrescar)
+function fillNotes(box, es) {
+  box.innerHTML = '<h4>Novedades</h4>';
+  es.forEach(e => {
+    if (e.title) { const t = document.createElement('b'); t.textContent = e.title; box.appendChild(t); }
+    const ul = document.createElement('ul');
+    e.items.forEach(x => { const li = document.createElement('li'); li.textContent = x; ul.appendChild(li); });
+    box.appendChild(ul);
+  });
+  box.hidden = false;
+}
+async function whatsNew() {   // novedades DESPUÉS de refrescar (una sola vez por versión)
+  let seen = +localStorage.getItem(SEEN) || 0;
+  if (!seen) seen = Object.keys(localStorage).some(k => k.startsWith('kicklite.')) ? APP_V - 1 : APP_V;   // quien ya usaba la app ve la última entrada; quien llega nuevo, no
+  if (seen >= APP_V) { try { if (!localStorage.getItem(SEEN)) localStorage.setItem(SEEN, APP_V); } catch {} return; }
+  const es = (await notesFeed()).filter(e => e.v > seen && e.v <= APP_V).slice(0, 3);
+  try { localStorage.setItem(SEEN, APP_V); } catch {}
+  if (!es.length) return;
+  const m = document.createElement('div'); m.className = 'updm'; m.setAttribute('role', 'dialog'); m.setAttribute('aria-modal', 'true');
+  m.innerHTML = '<div class="updbox"><h3>¡KickLite se actualizó!</h3><div class="updlog"></div><div class="updact"><button class="go">Entendido</button></div></div>';
+  fillNotes(m.querySelector('.updlog'), es); m.querySelector('.go').onclick = () => m.remove();
+  document.body.appendChild(m);
+}
+setTimeout(whatsNew, 1500);
 const WATCH = ['index.html', 'app.js', 'style.css'];
 let sig0 = null, sigSeen = null;
 async function sigNow() {
@@ -992,24 +1182,18 @@ function showUpdateBar() {   // barra discreta que queda arriba si eliges "Más 
   document.body.appendChild(d);
 }
 function showUpdate() {   // ventana en el centro de la pantalla, aunque estés en pleno directo
-  document.querySelectorAll('.updm,.upd').forEach(x => x.remove());
+  document.querySelectorAll('.updm:not(.fxov),.upd').forEach(x => x.remove());
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});   // en pantalla completa no se vería la ventana
   const warn = drafts.length ? ` Tienes ${drafts.length} clip${drafts.length > 1 ? 's' : ''} sin descargar: descárgalo${drafts.length > 1 ? 's' : ''} antes, porque se pierden al refrescar.` : '';
   const m = document.createElement('div'); m.className = 'updm'; m.setAttribute('role', 'dialog'); m.setAttribute('aria-modal', 'true');
   m.innerHTML = '<div class="updbox"><h3>Estamos haciendo cambios</h3><div class="updlog" hidden></div><p></p><div class="updact"><button class="go">Refrescar ahora</button><button class="later">Más tarde</button></div></div>';
   m.querySelector('p').textContent = 'Por favor refresca la página para cargar la versión nueva.' + warn;
+  let shownV = 0;
   newNotes().then(es => {   // el aviso sale al instante; las novedades se rellenan en cuanto llegan
     if (!es.length || !m.isConnected) return;
-    const box = m.querySelector('.updlog'); box.innerHTML = '<h4>Novedades</h4>';
-    es.forEach(e => {
-      if (e.title) { const t = document.createElement('b'); t.textContent = e.title; box.appendChild(t); }
-      const ul = document.createElement('ul');
-      e.items.forEach(x => { const li = document.createElement('li'); li.textContent = x; ul.appendChild(li); });
-      box.appendChild(ul);
-    });
-    box.hidden = false;
+    fillNotes(m.querySelector('.updlog'), es); shownV = Math.max(...es.map(e => e.v));
   });
-  m.querySelector('.go').onclick = () => location.reload();
+  m.querySelector('.go').onclick = () => { if (shownV) try { localStorage.setItem(SEEN, shownV); } catch {} location.reload(); };   // ya las leyó: no se repiten al volver
   m.querySelector('.later').onclick = () => { m.remove(); showUpdateBar(); };
   document.body.appendChild(m);
 }

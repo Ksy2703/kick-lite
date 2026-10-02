@@ -29,6 +29,12 @@ Requiere HTTPS (todos los hosts anteriores lo dan).
 Toca ✂ en el reproductor para guardar los últimos 15/30/60 s (se elige en 🎞). En 🎞 puedes recortar (por segmentos),
 compartir o descargar .mp4. Los clips viven en memoria: descárgalos antes de cerrar la app.
 
+Al editar un clip hay dos modos:
+- **Limpio**: exporta el clip tal cual (horizontal, resolución original, sin texto). Es instantáneo.
+- **Editado**: formato 16:9 o 9:16 (vertical: "Ajustar" con fondo difuminado o "Recortar" al centro) y texto estilo meme en tiempo real
+  (arriba/centro/abajo, borde o fondo semitransparente, color y animación). Se vuelve a generar el clip, así que tarda lo que dura
+  y hay que dejar la pantalla abierta. El formato final depende del navegador (.mp4 si graba H.264, si no .webm).
+
 ## Escribir en el chat (opcional)
 1. kick.com/settings/developer → crea una app. Redirect URL = https://TU-APP.vercel.app/ (exacta, con la barra final).
    Permisos (scopes): user:read y chat:write.

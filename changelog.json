@@ -1,6 +1,16 @@
 {
   "entries": [
     {
+      "v": 22,
+      "title": "Versión 22 · Clips con modo Editado",
+      "items": [
+        "Nuevo: al abrir un clip puedes elegir entre Modo Limpio (el clip tal cual, horizontal y sin cambios) y Modo Editado.",
+        "Modo Editado: elige formato horizontal 16:9 o vertical 9:16 para TikTok / Shorts.",
+        "Modo Editado: escribe un texto estilo meme y míralo en tiempo real: letra grande con borde o fondo semitransparente, arriba, en el centro o abajo, con animación.",
+        "Las novedades ahora también aparecen justo después de refrescar, una sola vez."
+      ]
+    },
+    {
       "v": 21,
       "title": "Versión 21",
       "items": [
