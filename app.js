@@ -5,6 +5,7 @@ const LS = 'kicklite.favs';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt = n => new Intl.NumberFormat('es', {notation:'compact', maximumFractionDigits:1}).format(n || 0);
+const DESK = matchMedia('(min-width:1024px)');   // PC: se piden más canales y se enseñan más; en el teléfono todo igual
 let tab = 'live', lang = 'es', cache = {}, topList = [], hls = null, cur = null, hideT, upT, wake, tries = 0;
 
 /* ---------- Favoritos ---------- */
@@ -57,7 +58,7 @@ const getChannel = async slug => fromChannel(await kick('/api/v2/channels/' + en
 const LANGS = {es:['es','spanish','español','espanol'], en:['en','english'], pt:['pt','portuguese','português','portugues']};
 async function getTop() {
   // Se piden 3 páginas y se filtra por idioma aquí, porque el endpoint no siempre respeta el idioma pedido
-  const pages = await Promise.allSettled([1, 2, 3].map(p => kick(`/stream/livestreams/${lang}?sort=desc&page=${p}&language=${lang}`)));
+  const pages = await Promise.allSettled(Array.from({length: DESK.matches ? 7 : 3}, (_, i) => i + 1).map(p => kick(`/stream/livestreams/${lang}?sort=desc&page=${p}&language=${lang}`)));
   const ok = pages.filter(p => p.status === 'fulfilled');
   if (!ok.length) throw new Error(pages[0].reason?.message || 'sin respuesta');
   const raw = ok.flatMap(p => Array.isArray(p.value.data) ? p.value.data : (p.value.data?.livestreams || p.value.livestreams || []));
@@ -105,7 +106,7 @@ function saveMemo(slug) {   // al marcar ♡ se guarda lo que ya se ve en pantal
   try { localStorage.setItem(MEMO, JSON.stringify(m)); } catch {}
 }
 async function hydrate(items) {   // completa avatares que faltan pidiendo el canal (máx. 6, uno a uno)
-  for (const s of items.filter(x => !x.avatar && !x.hyd).slice(0, 6)) {
+  for (const s of items.filter(x => !x.avatar && !x.hyd).slice(0, DESK.matches ? 14 : 6)) {
     s.hyd = true;
     try {
       const c = await getChannel(s.slug); if (!c.avatar) continue;
@@ -202,7 +203,7 @@ async function play(slug) {
   cur = {...cache[slug]}; mode = 'direct'; tries = 0;
   $('#player').hidden = false; $('#player').scrollTop = 0; document.body.style.overflow = 'hidden';
   $('#retry').hidden = true; v.poster = cur.thumb || ''; paintInfo();
-  const more = topList.filter(s => s.slug !== slug).slice(0, 8);
+  const more = topList.filter(s => s.slug !== slug).slice(0, DESK.matches ? 18 : 8);
   $('#more').innerHTML = more.map(card).join(''); more.forEach(s => cache[s.slug] ||= s);
   try { const c = await getChannel(slug); if (cur?.slug !== slug) return; cur = {...cur, ...c}; paintInfo(); chatStart(cur.chat, slug, cur.subs); paintAuth(); }
   catch (e) { dbg('canal', e.message); return giveUp(); }
@@ -1136,7 +1137,7 @@ load();
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('service-worker.js');
 
 /* ---------- Aviso de versión nueva: compara cada minuto la "huella" (ETag) de los archivos de la app ---------- */
-const APP_V = 23;   // sube este número en cada versión nueva y añade sus novedades arriba en changelog.json (con "v" igual a este número)
+const APP_V = 24;   // sube este número en cada versión nueva y añade sus novedades arriba en changelog.json (con "v" igual a este número)
 const SEEN = 'kicklite.seenv';   // última versión cuyas novedades ya vio esta persona
 async function notesFeed() {
   try { const r = await fetch('changelog.json', {cache:'no-store'}); if (!r.ok) return []; const j = await r.json(); return (j.entries || []).filter(e => e && +e.v > 0 && Array.isArray(e.items) && e.items.length).sort((p, q) => q.v - p.v); } catch { return []; }

@@ -1,6 +1,16 @@
 {
   "entries": [
     {
+      "v": 24,
+      "title": "Versión 24 · Mejoras en computadora",
+      "items": [
+        "En computadora ahora se ven más canales en Top y la pantalla se aprovecha mejor, con menos espacios vacíos.",
+        "Hemos arreglado el multistream en computadora: los streams pequeños ya no tapan al grande.",
+        "En el reproductor de computadora aparecen más canales en directo debajo del vídeo.",
+        "En el teléfono todo se ve exactamente igual que antes."
+      ]
+    },
+    {
       "v": 23,
       "title": "Versión 23 · Ahora también en computadora",
       "items": [
