@@ -185,3 +185,10 @@ body.sr{padding-top:calc(78px + env(safe-area-inset-top))}
 .upd span{flex:1}
 .upd button{padding:6px 12px;border-radius:99px;background:var(--g);color:#000;font-weight:700}
 .upd .x{background:none;color:var(--dim);padding:6px}
+
+.emop{max-height:34vh;overflow:auto;padding:4px 0 8px;margin-bottom:6px;border-bottom:1px solid var(--line);font-size:13px;color:var(--dim)}
+.emop h4{font-size:11px;margin:6px 2px 4px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px}
+.eg{display:flex;flex-wrap:wrap;gap:2px}
+.eg button{width:40px;height:40px;padding:4px;border-radius:8px}
+.eg button img{width:100%;height:100%;object-fit:contain;pointer-events:none}
+.eg button.sub{opacity:.45}

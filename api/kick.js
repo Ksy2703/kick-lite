@@ -22,7 +22,7 @@ function guard(req, res, limit) {
 export default async function handler(req, res) {
   if (!guard(req, res, 90)) return;
   const p = String(req.query.path || '');
-  const ok = /^\/(api\/v[12]\/channels\/[\w-]+|stream\/livestreams\/\w+|api\/search)(\?[\w=&%-]*)?$/.test(p);
+  const ok = /^\/(api\/v[12]\/channels\/[\w-]+|stream\/livestreams\/\w+|api\/search|emotes\/[\w-]+)(\?[\w=&%-]*)?$/.test(p);
   if (!ok) return res.status(400).json({ error: 'path no permitido' });
   try {
     const r = await fetch('https://kick.com' + p, {

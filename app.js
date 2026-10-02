@@ -738,8 +738,37 @@ async function sendChat(text) {
 $('#login').onclick = login;
 $('#logout').onclick = () => { localStorage.removeItem(AUTHLS); paintAuth(); toast('Sesión cerrada'); };
 $('#cform').addEventListener('submit', async e => {
-  e.preventDefault(); const t = $('#cin').value.trim(); if (!t) return; $('#cin').value = '';
+  e.preventDefault(); const t = $('#cin').value.trim(); if (!t) return; $('#cin').value = ''; $('#emop').hidden = true;
   try { await sendChat(t); } catch (err) { toast('No se pudo enviar: ' + err.message); $('#cin').value = t; }
+});
+
+/* ---------- Selector de emotes (toca uno y se inserta como [emote:ID:nombre]) ---------- */
+const emoCache = {};
+async function loadEmotes(slug) {
+  if (emoCache[slug]) return emoCache[slug];
+  const j = await kick('/emotes/' + encodeURIComponent(slug)), groups = [];
+  (Array.isArray(j) ? j : []).forEach(g => {
+    const list = (Array.isArray(g.emotes) ? g.emotes : (g.id && g.name ? [g] : [])).filter(e => +e.id && e.name);
+    if (list.length) groups.push({label: g.name || (g.slug === slug ? 'Del canal' : g.slug) || 'Emotes', list});
+  });
+  return groups.length ? (emoCache[slug] = groups) : groups;
+}
+async function toggleEmotes() {
+  const p = $('#emop'); if (!p.hidden) { p.hidden = true; return; }
+  if (!cur) return; p.hidden = false; p.textContent = 'Cargando emotes…';
+  try {
+    const gs = await loadEmotes(cur.slug);
+    if (!gs.length) { p.textContent = 'No se encontraron emotes para este canal.'; return; }
+    p.innerHTML = gs.map(g => `<h4>${esc(g.label)}</h4><div class="eg">` + g.list.map(e =>
+      `<button type="button" data-id="${+e.id}" data-n="${esc(e.name)}" title="${esc(e.name)}"${e.subscribers_only ? ' class="sub"' : ''}><img loading="lazy" src="https://files.kick.com/emotes/${+e.id}/fullsize" alt="${esc(e.name)}"></button>`).join('') + '</div>').join('');
+  } catch (e) { p.textContent = 'No se pudieron cargar los emotes (' + e.message + ')'; }
+}
+$('#cemo').onclick = toggleEmotes;
+$('#emop').addEventListener('click', e => {
+  const b = e.target.closest('button[data-id]'); if (!b) return;
+  const i = $('#cin'), tok = `[emote:${b.dataset.id}:${b.dataset.n}] `, a = i.selectionStart ?? i.value.length, z = i.selectionEnd ?? a;
+  if (i.value.length + tok.length > 500) return toast('El mensaje es demasiado largo');
+  i.value = i.value.slice(0, a) + tok + i.value.slice(z); i.focus(); i.setSelectionRange(a + tok.length, a + tok.length);
 });
 
 /* ---------- Eventos ---------- */
