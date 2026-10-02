@@ -45,7 +45,7 @@ function fromChannel(c) {
   const ls = c.livestream;
   return { slug:c.slug, name:c.user?.username || c.slug, avatar:deep(c.user, PICRE) || deep(c, PICRE), live:!!ls,
     title:ls?.session_title || '', game:ls?.categories?.[0]?.name || '', viewers:ls?.viewer_count || 0,
-    thumb:img(ls?.thumbnail) || img(c.previous_livestreams?.[0]?.thumbnail) || img(c.offline_banner_image) || img(c.banner_image), hls:c.playback_url || '', since:ls?.created_at || ls?.start_time || '', chat:c.chatroom?.id || 0 };
+    thumb:img(ls?.thumbnail) || img(c.previous_livestreams?.[0]?.thumbnail) || img(c.offline_banner_image) || img(c.banner_image), hls:c.playback_url || '', since:ls?.created_at || ls?.start_time || '', chat:c.chatroom?.id || 0, uid:c.user_id || c.user?.id || 0, subs:c.subscriber_badges || [] };
 }
 function fromLive(x) {
   return { slug:x.channel?.slug, name:x.channel?.user?.username || x.channel?.slug,
@@ -204,7 +204,7 @@ async function play(slug) {
   $('#retry').hidden = true; v.poster = cur.thumb || ''; paintInfo();
   const more = topList.filter(s => s.slug !== slug).slice(0, 8);
   $('#more').innerHTML = more.map(card).join(''); more.forEach(s => cache[s.slug] ||= s);
-  try { const c = await getChannel(slug); if (cur?.slug !== slug) return; cur = {...cur, ...c}; paintInfo(); chatStart(cur.chat, slug); }
+  try { const c = await getChannel(slug); if (cur?.slug !== slug) return; cur = {...cur, ...c}; paintInfo(); chatStart(cur.chat, slug, cur.subs); paintAuth(); }
   catch (e) { dbg('canal', e.message); return giveUp(); }
   if (!cur.live || !cur.hls) { dbg('sin url de video', cur.live); return giveUp(); }
   dbg('url', cur.hls);
@@ -218,7 +218,8 @@ function startStream() {
   if (window.Hls && Hls.isSupported()) {          // Android / Chrome / Firefox / iOS 17.1+
     const cfg = {lowLatencyMode:false, maxBufferLength:20, backBufferLength:300, liveSyncDurationCount: mode === 'direct' ? 2 : 3, maxLiveSyncPlaybackRate:1.1, manifestLoadingMaxRetry:1, fragLoadingMaxRetry:3};
     if (mode === 'proxy') cfg.xhrSetup = (xhr, url) => xhr.open('GET', HLSPROXY + encodeURIComponent(url) + kq(), true);
-    hls = new Hls(cfg);
+    hls = new Hls(cfg); ring = []; ringOK = true;
+    hls.on(Hls.Events.FRAG_LOADED, (_, d) => ringAdd(d));
     hls.on(Hls.Events.MANIFEST_PARSED, (_, d) => {
       $('#qual').innerHTML = '<option value="-1">Auto</option>' + d.levels.map((l, i) => `<option value="${i}">${l.height}p</option>`).reverse().join('');
       play2();
@@ -231,13 +232,13 @@ function startStream() {
     });
     hls.loadSource(cur.hls); hls.attachMedia(v);
   } else {                                         // iOS antiguo: HLS nativo
-    v.onerror = () => next('nativo');
+    ringOK = false; v.onerror = () => next('nativo');
     v.src = mode === 'proxy' ? '/api/hls?r=1' + kq() + '&u=' + encodeURIComponent(cur.hls) : cur.hls; play2();
   }
 }
 function play2() { v.play().catch(() => { v.muted = true; v.play().catch(() => {}); }); }
 function stop(keepUI) {
-  clearTimeout(watch); clearInterval(upT);
+  clearTimeout(watch); clearInterval(upT); ring = [];
   chatStop(); v.onerror = null; v.pause(); v.removeAttribute('src'); v.load();
   if (hls) { hls.destroy(); hls = null; }
   $('#retry').hidden = true; $('#dbg').hidden = true;
@@ -245,26 +246,61 @@ function stop(keepUI) {
   if (!keepUI) { $('#player').hidden = true; document.body.style.overflow = ''; cur = null; if (document.fullscreenElement) document.exitFullscreen(); }
 }
 
-/* ---------- Chat (WebSocket público de Kick, solo lectura). Fábrica: permite varias instancias ---------- */
+/* ---------- Chat (WebSocket público de Kick). Fábrica: varias instancias ---------- */
 const CHAT_WS = 'wss://ws-us2.pusher.com/app/32cbd69e4b950bf97679?protocol=7&client=js&version=8.4.0&flash=false';
+const BD = {broadcaster:['🎥','Streamer'], moderator:['🛡️','Mod'], vip:['💎','VIP'], og:['OG','OG'], founder:['F','Fundador'], verified:['✔','Verificado'], sub_gifter:['🎁','Regalador'], subscriber:['★','Sub']};
 function Chat(S) {   // S = selectores {msgs, box, jump, frame}
-  let ws = null, gen = 0;
+  let ws = null, gen = 0, subs = [];
   const close = () => { if (ws) { ws.onclose = ws.onmessage = null; try { ws.close(); } catch {} ws = null; } };
-  const clear = () => { gen++; close(); $(S.msgs).innerHTML = ''; $(S.frame).innerHTML = ''; $(S.jump).hidden = true; };
+  const clear = () => { gen++; close(); $(S.msgs).innerHTML = ''; $(S.frame).innerHTML = ''; $(S.jump).hidden = true; $(S.box).querySelector('.pin')?.remove(); };
   const frame = slug => { close(); $(S.frame).innerHTML = `<iframe src="https://kick.com/popout/${encodeURIComponent(slug)}/chat" loading="lazy"></iframe>`; };
-  function add(d) {
-    if (!d?.content) return;
-    const box = $(S.box), near = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
-    const col = /^#[0-9a-f]{3,8}$/i.test(d.sender?.identity?.color || '') ? d.sender.identity.color : '#9fb0a5';
-    const txt = esc(d.content).replace(/\[emote:(\d+):([^\]]*)\]/g, (_, id, n) => `<img src="https://files.kick.com/emotes/${id}/fullsize" alt="${n}" loading="lazy">`);
-    const li = document.createElement('li'); li.className = 'msg';
-    li.innerHTML = `<b style="color:${col}">${esc(d.sender?.username || '')}</b>${txt}`;
-    const ul = $(S.msgs); ul.appendChild(li);
-    while (ul.children.length > 150) ul.firstChild.remove();
+  const emotes = t => esc(t).replace(/\[emote:(\d+):([^\]]*)\]/g, (_, id, n) => `<img src="https://files.kick.com/emotes/${id}/fullsize" alt="${n}" loading="lazy">`);
+  const badge = b => {
+    if (b.type === 'subscriber') {
+      const m = b.count || 0, best = subs.filter(x => x.months <= m).sort((p, q) => q.months - p.months)[0], u = img(best?.badge_image);
+      if (u) return `<img class="bd" src="${esc(u)}" alt="Sub" title="Sub ${m} m">`;
+    }
+    const x = BD[b.type]; return x ? `<span class="bd t-${esc(b.type)}" title="${esc(x[1])}">${x[0]}</span>` : '';
+  };
+  function push(li) {
+    const box = $(S.box), near = box.scrollHeight - box.scrollTop - box.clientHeight < 80, ul = $(S.msgs);
+    ul.appendChild(li); while (ul.children.length > 150) ul.firstChild.remove();
     if (near) box.scrollTop = box.scrollHeight; else $(S.jump).hidden = false;
   }
-  function start(id, slug) {
-    clear(); const g = gen;
+  function build(d) {
+    if (!d?.content) return null;
+    const li = document.createElement('li'); li.className = 'msg'; if (d.id) li.dataset.id = d.id;
+    const col = /^#[0-9a-f]{3,8}$/i.test(d.sender?.identity?.color || '') ? d.sender.identity.color : '#9fb0a5';
+    const bs = (d.sender?.identity?.badges || []).map(badge).join('');
+    const o = d.metadata?.original_sender;
+    const rep = o ? `<div class="rp">↪ ${esc(o.username || '')}: ${esc((d.metadata.original_message?.content || '').slice(0, 80))}</div>` : '';
+    li.innerHTML = `${rep}${bs}<b style="color:${col}">${esc(d.sender?.username || '')}</b>${emotes(d.content)}`;
+    return li;
+  }
+  function sys(t, cls) { const li = document.createElement('li'); li.className = 'msg sys ' + cls; li.textContent = t; push(li); }
+  function del(d) {
+    const id = String(d?.message?.id || d?.id || ''); if (!id) return;
+    $(S.msgs).querySelectorAll('li').forEach(li => { if (li.dataset.id === id) li.classList.add('del'); });
+  }
+  function pin(d) {
+    const m = d?.message || d; if (!m?.content) return;
+    let p = $(S.box).querySelector('.pin'); if (!p) { p = document.createElement('div'); p.className = 'pin'; $(S.box).prepend(p); }
+    p.innerHTML = `<span><b>📌 ${esc(m.sender?.username || '')}</b> ${emotes(m.content)}</span><button aria-label="Ocultar">✕</button>`;
+    p.querySelector('button').onclick = () => p.remove();
+  }
+  function event(n, d) {
+    if (!d) return;
+    if (n === 'ChatMessageEvent') { const li = build(d); if (li) push(li); }
+    else if (n === 'MessageDeletedEvent') del(d);
+    else if (n === 'SubscriptionEvent') sys(`★ ${d.username || ''} se suscribió${d.months > 1 ? ' · ' + d.months + ' meses' : ''}`, 'sub');
+    else if (n === 'GiftedSubscriptionsEvent') { const k = d.gifted_usernames?.length || 1; sys(`🎁 ${d.gifter_username || ''} regaló ${k} sub${k > 1 ? 's' : ''}`, 'gift'); }
+    else if (n === 'RewardRedeemedEvent') sys(`🎯 ${d.username || d.user_name || ''} canjeó ${d.reward_title || 'una recompensa'}`, 'rw');
+    else if (n === 'PinnedMessageCreatedEvent') pin(d);
+    else if (n === 'PinnedMessageDeletedEvent') $(S.box).querySelector('.pin')?.remove();
+    else gd('evento sin manejar: ' + n);
+  }
+  function start(id, slug, badges) {
+    clear(); subs = Array.isArray(badges) ? badges : []; const g = gen;
     if (!id) return frame(slug);
     let ok = false, fails = 0;
     const connect = () => {
@@ -272,10 +308,14 @@ function Chat(S) {   // S = selectores {msgs, box, jump, frame}
       ws = new WebSocket(CHAT_WS);
       ws.onmessage = e => {
         let m; try { m = JSON.parse(e.data); } catch { return; }
-        if (m.event === 'pusher:connection_established') ws.send(JSON.stringify({event:'pusher:subscribe', data:{auth:'', channel:`chatrooms.${id}.v2`}}));
-        else if (m.event === 'pusher_internal:subscription_succeeded') { ok = true; fails = 0; clearTimeout(t); dbg('chat conectado'); }
-        else if (m.event === 'pusher:ping') ws.send(JSON.stringify({event:'pusher:pong', data:{}}));
-        else if (m.event === 'App\\Events\\ChatMessageEvent') { try { add(JSON.parse(m.data)); } catch {} }
+        const ev = String(m.event || '');
+        if (ev === 'pusher:connection_established') ws.send(JSON.stringify({event:'pusher:subscribe', data:{auth:'', channel:`chatrooms.${id}.v2`}}));
+        else if (ev === 'pusher_internal:subscription_succeeded') { ok = true; fails = 0; clearTimeout(t); dbg('chat conectado'); }
+        else if (ev === 'pusher:ping') ws.send(JSON.stringify({event:'pusher:pong', data:{}}));
+        else if (ev.startsWith('App\\Events\\')) {
+          let d = m.data; if (typeof d === 'string') { try { d = JSON.parse(d); } catch { d = null; } }
+          try { event(ev.slice(11), d); } catch {}
+        }
       };
       ws.onclose = () => {
         clearTimeout(t); if (g !== gen) return;
@@ -288,7 +328,7 @@ function Chat(S) {   // S = selectores {msgs, box, jump, frame}
   return {start, stop: clear};
 }
 const chatMain = Chat({msgs:'#msgs', box:'#chat', jump:'#jump', frame:'#chatbox'});
-const chatStart = (id, slug) => chatMain.start(id, slug), chatStop = () => chatMain.stop();
+const chatStart = (id, slug, subs) => chatMain.start(id, slug, subs), chatStop = () => chatMain.stop();
 
 document.addEventListener('error', e => {
   const i = e.target; if (i.tagName !== 'IMG') return;
@@ -382,7 +422,7 @@ function selectCell(slug) {
 }
 function mchatSwitch() {
   mchat.stop(); const c = cells[msel];
-  if (c?.info) mchat.start(c.info.chat, msel);
+  if (c?.info) mchat.start(c.info.chat, msel, c.info.subs);
 }
 function renderMTabs() {
   $('#mgrid').classList.toggle('focus', lay === 'focus' && !!msel);
@@ -431,6 +471,158 @@ $('#mgrid').addEventListener('click', e => {
 $('#mjump').onclick = () => { $('#mchat').scrollTop = $('#mchat').scrollHeight; $('#mjump').hidden = true; };
 $('#mchat').addEventListener('scroll', () => { const b = $('#mchat'); if (b.scrollHeight - b.scrollTop - b.clientHeight < 60) $('#mjump').hidden = true; });
 
+/* ---------- Clips: buffer en memoria de los últimos segundos del directo ---------- */
+const CLIP_KEEP = 150;   // segundos guardados (≈ 50–90 MB según calidad)
+let ring = [], ringOK = true, drafts = [], ed = null, toastT;
+let clipDur = +localStorage.getItem('kicklite.clipdur') || 30;
+const toast = t => { const e = $('#toast'); e.textContent = t; e.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => e.hidden = true, 2600); };
+function ringAdd(d) {
+  const f = d.frag; if (!f || f.type !== 'main' || !d.payload || typeof f.sn !== 'number') return;
+  if (new Uint8Array(d.payload, 0, 1)[0] !== 0x47) { ringOK = false; return; }   // solo segmentos MPEG-TS
+  if (ring.some(x => x.sn === f.sn)) return;
+  ring.push({sn:f.sn, start:f.start, dur:f.duration, level:f.level, data:d.payload.slice(0)});
+  ring.sort((p, q) => p.sn - q.sn);
+  let tot = ring.reduce((s, x) => s + x.dur, 0);
+  while (tot > CLIP_KEEP && ring.length > 1) tot -= ring.shift().dur;
+}
+function makeClip() {
+  if (!cur) return;
+  if (!ringOK) return toast('Este navegador no permite clips en este stream');
+  if (!ring.length) return toast('Espera unos segundos y vuelve a tocar ✂');
+  const endT = v.currentTime;
+  let sel = ring.filter(x => x.start < endT + 0.01 && x.start + x.dur > endT - clipDur);
+  let i = sel.length - 1; while (i > 0 && sel[i - 1].sn === sel[i].sn - 1 && sel[i - 1].level === sel[i].level) i--;
+  sel = sel.slice(i);
+  if (!sel.length) return toast('Ese momento ya no está en el buffer');
+  const dur = sel.reduce((s, x) => s + x.dur, 0);
+  drafts.unshift({id:Date.now(), slug:cur.slug, name:cur.name || cur.slug, at:new Date(), frags:sel, dur});
+  drafts = drafts.slice(0, 6); renderClips();
+  toast(`✂ Clip de ${Math.round(dur)} s guardado`);
+}
+function loadScript(u) { return new Promise((ok, no) => { const s = document.createElement('script'); s.src = u; s.onload = ok; s.onerror = no; document.head.appendChild(s); }); }
+async function loadMux() {
+  if (window.muxjs) return;
+  for (const u of ['https://cdnjs.cloudflare.com/ajax/libs/mux.js/7.0.3/mux.min.js', 'https://cdn.jsdelivr.net/npm/mux.js@7.0.3/dist/mux.min.js']) {
+    try { await loadScript(u); if (window.muxjs) return; } catch {}
+  }
+  throw new Error('mux');
+}
+const concat = fr => { const o = new Uint8Array(fr.reduce((s, x) => s + x.data.byteLength, 0)); let p = 0; fr.forEach(x => { o.set(new Uint8Array(x.data), p); p += x.data.byteLength; }); return o; };
+async function toMp4(fr) {
+  await loadMux();
+  return new Promise((res, rej) => {
+    const t = new muxjs.mp4.Transmuxer(); let init = null; const parts = [];
+    t.on('data', s => { if (!init) init = s.initSegment; parts.push(s.data); });
+    t.on('done', () => init && parts.length ? res(new Blob([init, ...parts], {type:'video/mp4'})) : rej(new Error('vacío')));
+    fr.forEach(x => t.push(new Uint8Array(x.data))); t.flush();
+  });
+}
+const stamp = d => { const p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`; };
+function renderClips() {
+  $('#clips').textContent = '🎞' + (drafts.length ? ' ' + drafts.length : '');
+  $('#clist').innerHTML = drafts.length
+    ? drafts.map(d => `<div class="citem"><div><b>${esc(d.name)}</b><small>${d.at.toLocaleTimeString('es')} · ${Math.round(d.dur)} s</small></div><button data-e="${d.id}">Editar</button><button data-q="${d.id}" aria-label="Borrar">✕</button></div>`).join('')
+    : '<p class="mh" style="padding:12px 16px">Aún no hay clips. Toca ✂ en el reproductor para guardar los últimos segundos.</p>';
+  document.querySelectorAll('#cdur button').forEach(b => b.classList.toggle('on', +b.dataset.d === clipDur));
+}
+function showClipList() {
+  const vid = $('#cvid'); vid.pause(); if (ed?.url) URL.revokeObjectURL(ed.url); ed = null;
+  $('#ced').hidden = true; $('#clist').hidden = false; $('#cdur').hidden = false; $('#ctitle').textContent = 'Clips'; renderClips();
+}
+const edLabels = () => { const s = +$('#cstart').value, e = +$('#cend').value; $('#cs').textContent = mmss(ed.b[s]); $('#ce').textContent = mmss(ed.b[e]) + ' · ' + Math.round(ed.b[e] - ed.b[s]) + ' s'; };
+async function openEditor(id) {
+  const d = drafts.find(x => x.id === id); if (!d) return;
+  const b = [0]; d.frags.forEach(f => b.push(b[b.length - 1] + f.dur)); const n = d.frags.length;
+  ed = {d, b, url:''};
+  $('#clist').hidden = true; $('#cdur').hidden = true; $('#ced').hidden = false; $('#ctitle').textContent = 'Editar clip';
+  Object.assign($('#cstart'), {min:0, max:Math.max(0, n - 1), step:1, value:0}); Object.assign($('#cend'), {min:1, max:n, step:1, value:n}); edLabels();
+  const vid = $('#cvid');
+  try { const blob = await toMp4(d.frags); if (!ed || ed.d !== d) return; ed.url = URL.createObjectURL(blob); vid.src = ed.url; vid.play().catch(() => {}); }
+  catch { toast('Sin vista previa: se podrá guardar como .ts'); }
+}
+async function exportClip(kind) {
+  if (!ed) return;
+  const sub = ed.d.frags.slice(+$('#cstart').value, +$('#cend').value), name = `${ed.d.slug}-${stamp(ed.d.at)}`;
+  let blob, ext = 'mp4';
+  if (kind === 'ts') { blob = new Blob([concat(sub)], {type:'video/mp2t'}); ext = 'ts'; }
+  else { try { blob = await toMp4(sub); } catch { blob = new Blob([concat(sub)], {type:'video/mp2t'}); ext = 'ts'; toast('No se pudo convertir a .mp4: se guardó como .ts'); } }
+  const file = new File([blob], `${name}.${ext}`, {type:blob.type});
+  if (kind === 'share' && navigator.canShare?.({files:[file]})) { try { await navigator.share({files:[file], title:name}); return; } catch (e) { if (e.name === 'AbortError') return; } }
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = file.name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+}
+$('#clip').onclick = makeClip;
+$('#clips').onclick = () => { showClipList(); $('#csheet').hidden = false; };
+$('#cclose').onclick = () => { showClipList(); $('#csheet').hidden = true; };
+$('#cback').onclick = showClipList;
+$('#cdur').addEventListener('click', e => { const b = e.target.closest('[data-d]'); if (!b) return; clipDur = +b.dataset.d; try { localStorage.setItem('kicklite.clipdur', clipDur); } catch {} renderClips(); });
+$('#clist').addEventListener('click', e => {
+  const b = e.target.closest('[data-e]'), q = e.target.closest('[data-q]');
+  if (b) openEditor(+b.dataset.e); else if (q) { drafts = drafts.filter(x => x.id !== +q.dataset.q); renderClips(); }
+});
+$('#cstart').addEventListener('input', () => { const s = $('#cstart'), e = $('#cend'); if (+s.value >= +e.value) e.value = +s.value + 1; edLabels(); $('#cvid').currentTime = ed.b[+s.value]; });
+$('#cend').addEventListener('input', () => { const s = $('#cstart'), e = $('#cend'); if (+e.value <= +s.value) s.value = +e.value - 1; edLabels(); $('#cvid').currentTime = ed.b[+s.value]; });
+$('#cvid').addEventListener('timeupdate', () => { const vd = $('#cvid'); if (ed && vd.currentTime >= ed.b[+$('#cend').value] - 0.05) vd.currentTime = ed.b[+$('#cstart').value]; });
+$('#cshare').onclick = () => exportClip('share');
+$('#cdl').onclick = () => exportClip('mp4');
+$('#cts').onclick = () => exportClip('ts');
+renderClips();
+
+/* ---------- Iniciar sesión con Kick y escribir en el chat (opcional: requiere api/auth.js + app de Kick) ---------- */
+const AUTHLS = 'kicklite.auth'; let AUTH = {enabled:false, clientId:''}, pane = 'chat';
+const b64u = b => btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const jpost = (action, body) => fetch('/api/auth?action=' + action + kq(), {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+const saveTok = j => { const t = {access:j.access_token, refresh:j.refresh_token, exp:Date.now() + (j.expires_in || 3600) * 1000}; localStorage.setItem(AUTHLS, JSON.stringify(t)); return t; };
+function paintAuth() {
+  const logged = !!localStorage.getItem(AUTHLS);
+  $('#cbar').hidden = !AUTH.enabled || pane !== 'chat'; $('#login').hidden = logged; $('#cform').hidden = !logged;
+}
+async function authInit() {
+  try { AUTH = await (await fetch('/api/auth?action=config' + kq())).json(); } catch {}
+  const p = new URLSearchParams(location.search), code = p.get('code');
+  if (code && sessionStorage.getItem('kl.verifier')) {
+    try {
+      if (p.get('state') !== sessionStorage.getItem('kl.state')) throw new Error('estado');
+      const r = await jpost('token', {code, verifier:sessionStorage.getItem('kl.verifier'), redirect:location.origin + '/'});
+      if (!r.ok) throw new Error('token ' + r.status); saveTok(await r.json()); toast('Sesión iniciada');
+    } catch (e) { toast('No se pudo iniciar sesión (' + e.message + ')'); }
+    sessionStorage.removeItem('kl.verifier'); history.replaceState({}, '', '/');
+  }
+  paintAuth();
+}
+async function login() {
+  const ver = b64u(crypto.getRandomValues(new Uint8Array(48))), st = b64u(crypto.getRandomValues(new Uint8Array(12)));
+  const ch = b64u(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(ver)));
+  sessionStorage.setItem('kl.verifier', ver); sessionStorage.setItem('kl.state', st);
+  location.href = 'https://id.kick.com/oauth/authorize?' + new URLSearchParams({response_type:'code', client_id:AUTH.clientId, redirect_uri:location.origin + '/', scope:'user:read chat:write', code_challenge:ch, code_challenge_method:'S256', state:st});
+}
+async function getToken(force) {
+  let t = null; try { t = JSON.parse(localStorage.getItem(AUTHLS)); } catch {}
+  if (!t) return '';
+  if (force || Date.now() > t.exp - 30000) {
+    const r = await jpost('refresh', {refresh:t.refresh});
+    if (!r.ok) { localStorage.removeItem(AUTHLS); paintAuth(); return ''; }
+    t = saveTok(await r.json());
+  }
+  return t.access;
+}
+async function sendChat(text) {
+  if (!cur?.uid) throw new Error('canal sin id');
+  for (let i = 0; i < 2; i++) {
+    const tok = await getToken(i === 1); if (!tok) throw new Error('inicia sesión de nuevo');
+    const r = await jpost('send', {token:tok, uid:cur.uid, content:text});
+    if (r.status === 401 && i === 0) continue;
+    if (!r.ok) throw new Error('Kick respondió ' + r.status);
+    return;
+  }
+}
+$('#login').onclick = login;
+$('#logout').onclick = () => { localStorage.removeItem(AUTHLS); paintAuth(); toast('Sesión cerrada'); };
+$('#cform').addEventListener('submit', async e => {
+  e.preventDefault(); const t = $('#cin').value.trim(); if (!t) return; $('#cin').value = '';
+  try { await sendChat(t); } catch (err) { toast('No se pudo enviar: ' + err.message); $('#cin').value = t; }
+});
+
 /* ---------- Eventos ---------- */
 ['play', 'pause', 'volumechange', 'timeupdate'].forEach(e => v.addEventListener(e, paintP));
 v.addEventListener('playing', () => { clearTimeout(watch); ovShow(); if (firstLive && edge() > 0) { firstLive = false; goLive(); } });
@@ -453,7 +645,7 @@ $('#ff').onclick = () => { v.currentTime = Math.min(edge() - 1, v.currentTime + 
 document.querySelector('.seg').addEventListener('click', e => {
   const b = e.target.closest('button'); if (!b) return;
   document.querySelectorAll('.seg button').forEach(x => x.classList.toggle('on', x === b));
-  $('#chat').hidden = b.dataset.pane !== 'chat'; $('#morepane').hidden = b.dataset.pane === 'chat';
+  $('#chat').hidden = b.dataset.pane !== 'chat'; $('#morepane').hidden = b.dataset.pane === 'chat'; pane = b.dataset.pane; paintAuth();
 });
 $('#jump').onclick = () => { $('#chat').scrollTop = $('#chat').scrollHeight; $('#jump').hidden = true; };
 $('#chat').addEventListener('scroll', () => { if ($('#chat').scrollHeight - $('#chat').scrollTop - $('#chat').clientHeight < 60) $('#jump').hidden = true; });
@@ -475,5 +667,6 @@ $('#searchForm').addEventListener('submit', async e => {
   try { show([await getChannel(slug)]); } catch { show([], `No se encontró el canal "${slug}".`); }
 });
 
+authInit();
 load();
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('service-worker.js');

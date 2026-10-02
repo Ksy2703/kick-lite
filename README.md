@@ -24,3 +24,13 @@ Requiere HTTPS (todos los hosts anteriores lo dan).
    La app pedirá el código una sola vez en cada dispositivo. Para dejar fuera a alguien, cambia el código y vuelve a desplegar.
 2. No publiques el enlace. vercel.json + robots.txt piden a los buscadores que no lo indexen.
 3. Si ves mucho consumo, revisa Vercel → Usage.
+
+## Clips
+Toca ✂ en el reproductor para guardar los últimos 15/30/60 s (se elige en 🎞). En 🎞 puedes recortar (por segmentos),
+compartir o descargar .mp4. Los clips viven en memoria: descárgalos antes de cerrar la app.
+
+## Escribir en el chat (opcional)
+1. kick.com/settings/developer → crea una app. Redirect URL = https://TU-APP.vercel.app/ (exacta, con la barra final).
+   Permisos (scopes): user:read y chat:write.
+2. Vercel → Settings → Environment Variables: KICK_CLIENT_ID y KICK_CLIENT_SECRET → Redeploy.
+3. En el chat del reproductor aparecerá "Iniciar sesión con Kick". Cada persona entra con su cuenta.

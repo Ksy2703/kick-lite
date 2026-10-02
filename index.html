@@ -50,6 +50,23 @@
   </div>
 </div>
 
+<div id="csheet" class="sheet csheet" hidden>
+  <div class="sheetin">
+    <div class="sh"><b id="ctitle">Clips</b><button id="cclose" aria-label="Cerrar">✕</button></div>
+    <div id="clist"></div>
+    <div id="cdur" class="cdur">Duración al marcar: <button data-d="15">15 s</button><button data-d="30">30 s</button><button data-d="60">60 s</button></div>
+    <div id="ced" hidden>
+      <video id="cvid" controls playsinline muted></video>
+      <div class="trim">
+        <label>Inicio <b id="cs"></b></label><input id="cstart" type="range">
+        <label>Fin <b id="ce"></b></label><input id="cend" type="range">
+      </div>
+      <div class="cact"><button id="cshare">Compartir</button><button id="cdl">Descargar .mp4</button><button id="cts">.ts</button><button id="cback">‹ Volver</button></div>
+    </div>
+  </div>
+</div>
+<div id="toast" class="toast" hidden></div>
+
 <section id="player" class="player" hidden>
   <div class="stage" id="stage">
     <video id="video" playsinline autoplay></video>
@@ -57,7 +74,7 @@
       <div class="ovt">
         <button id="close" aria-label="Volver">‹</button>
         <span class="badge">EN VIVO</span><span id="pview" class="pv"></span>
-        <i class="sp"></i><button id="pip" aria-label="Mini reproductor">⧉</button>
+        <i class="sp"></i><button id="clip" aria-label="Crear clip">✂</button><button id="clips" aria-label="Mis clips">🎞</button><button id="pip" aria-label="Mini reproductor">⧉</button>
       </div>
       <button id="pp" class="big" aria-label="Pausa">❚❚</button>
       <button id="rw" class="sk l" aria-label="Retroceder 10 segundos">↺10</button><button id="ff" class="sk r" aria-label="Adelantar 10 segundos">10↻</button>
@@ -80,6 +97,10 @@
   <div class="seg"><button data-pane="chat" class="on">Chat</button><button data-pane="more">Más canales</button></div>
   <div id="chat" class="pane chat"><ul id="msgs"></ul><div id="chatbox"></div><button id="jump" hidden>↓ Mensajes nuevos</button></div>
   <div id="morepane" class="pane" hidden><ul id="more" class="grid"></ul></div>
+  <div id="cbar" class="cbar" hidden>
+    <button id="login" class="loginb" hidden>Iniciar sesión con Kick para chatear</button>
+    <form id="cform" hidden><input id="cin" maxlength="500" placeholder="Escribe un mensaje…" autocomplete="off"><button type="submit" aria-label="Enviar">➤</button><button type="button" id="logout" aria-label="Cerrar sesión">⎋</button></form>
+  </div>
 </section>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.5.13/hls.min.js"></script>
