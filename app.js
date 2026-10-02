@@ -589,6 +589,93 @@ function patchDur(init, dur, fb) {   // init: Uint8Array del initSegment; dur: {
   });
   const total = dur.vide > 0 ? dur.vide : mx; if (total) setD(mvhd + (v(mvhd) ? 32 : 24), v(mvhd), Math.round(total * mTs));
 }
+/* Convierte el MP4 "fragmentado" de mux.js en un MP4 normal (moov + mdat con tablas completas).
+   Muchas galerías de móvil, WhatsApp, etc. no muestran el video de los MP4 fragmentados (se ve negro y solo suena el audio). */
+function flatMp4(init, parts) {
+  const u32 = (a, p) => ((a[p] << 24) | (a[p + 1] << 16) | (a[p + 2] << 8) | a[p + 3]) >>> 0;
+  const tag = (a, p) => String.fromCharCode(a[p], a[p + 1], a[p + 2], a[p + 3]);
+  const kids = (a, s, e) => { const o = []; for (let p = s; p + 8 <= e;) { const z = u32(a, p); if (z < 8 || p + z > e) break; o.push({t: tag(a, p + 4), s: p, e: p + z}); p += z; } return o; };
+  const find = (a, s, e, t) => kids(a, s, e).find(k => k.t === t);
+  const w32a = arr => { const o = new Uint8Array(arr.length * 4), dv = new DataView(o.buffer); for (let i = 0; i < arr.length; i++) dv.setUint32(i * 4, arr[i] >>> 0); return o; };
+  const w32 = (...v) => w32a(v);
+  const box = (t, ...c) => { const n = c.reduce((q, x) => q + x.length, 8), o = new Uint8Array(n); new DataView(o.buffer).setUint32(0, n); for (let i = 0; i < 4; i++) o[4 + i] = t.charCodeAt(i); let q = 8; c.forEach(x => { o.set(x, q); q += x.length; }); return o; };
+  const full = (t, ver, ...c) => box(t, new Uint8Array([ver, 0, 0, 0]), ...c);
+  const rl = a => { const r = []; a.forEach(x => { const l = r[r.length - 1]; if (l && l[1] === x) l[0]++; else r.push([1, x]); }); return r; };
+  const setDur = (b, t, d) => { const v = b[8], dv = new DataView(b.buffer, b.byteOffset, b.byteLength), o = ({mvhd:[24, 32], tkhd:[28, 36], mdhd:[24, 32]})[t][v ? 1 : 0]; if (v) { dv.setUint32(o, Math.floor(d / 2 ** 32)); dv.setUint32(o + 4, d % 2 ** 32); } else dv.setUint32(o, d); };
+
+  /* 1) pistas del segmento inicial */
+  const top = kids(init, 0, init.length), moov = top.find(k => k.t === 'moov'), ftyp = top.find(k => k.t === 'ftyp');
+  if (!moov || !ftyp) throw new Error('init sin moov');
+  const mvhdN = find(init, moov.s + 8, moov.e, 'mvhd'), mvhd = init.slice(mvhdN.s, mvhdN.e), mts = u32(mvhd, mvhd[8] ? 28 : 20);
+  const T = {}, order = [];
+  kids(init, moov.s + 8, moov.e).filter(k => k.t === 'trak').forEach(tr => {
+    const tkhdN = find(init, tr.s + 8, tr.e, 'tkhd'), mdia = find(init, tr.s + 8, tr.e, 'mdia');
+    const mdhdN = find(init, mdia.s + 8, mdia.e, 'mdhd'), hdlrN = find(init, mdia.s + 8, mdia.e, 'hdlr'), minf = find(init, mdia.s + 8, mdia.e, 'minf');
+    const stbl = find(init, minf.s + 8, minf.e, 'stbl'), stsd = find(init, stbl.s + 8, stbl.e, 'stsd');
+    const tkhd = init.slice(tkhdN.s, tkhdN.e), mdhd = init.slice(mdhdN.s, mdhdN.e), id = u32(tkhd, tkhd[8] ? 28 : 20);
+    T[id] = {id, kind:tag(init, hdlrN.s + 16), tkhd, mdhd, hdlr:init.slice(hdlrN.s, hdlrN.e), stsd:init.slice(stsd.s, stsd.e), ts:u32(mdhd, mdhd[8] ? 28 : 20),
+      minf:kids(init, minf.s + 8, minf.e).filter(k => k.t !== 'stbl').map(k => init.slice(k.s, k.e)), dur:[], size:[], sync:[], cts:[], chunks:[], t0:null};
+    order.push(id);
+  });
+  const trex = {}, mvex = find(init, moov.s + 8, moov.e, 'mvex');
+  if (mvex) kids(init, mvex.s + 8, mvex.e).filter(k => k.t === 'trex').forEach(k => { trex[u32(init, k.s + 12)] = {d:u32(init, k.s + 20), z:u32(init, k.s + 24), f:u32(init, k.s + 28)}; });
+
+  /* 2) fragmentos: se leen las tablas de muestras (trun) y se ubican sus datos */
+  const all = new Uint8Array(parts.reduce((q, x) => q + x.length, 0)); { let o = 0; parts.forEach(x => { all.set(x, o); o += x.length; }); }
+  const G = [];
+  kids(all, 0, all.length).filter(b => b.t === 'moof').forEach(mf => {
+    const trafs = kids(all, mf.s + 8, mf.e).filter(k => k.t === 'traf'); if (trafs.length !== 1) throw new Error('moof con varias pistas');
+    const tr = trafs[0], tfhd = find(all, tr.s + 8, tr.e, 'tfhd'), tfdt = find(all, tr.s + 8, tr.e, 'tfdt'), trun = find(all, tr.s + 8, tr.e, 'trun');
+    if (!tfhd || !trun) throw new Error('traf incompleto');
+    const id = u32(all, tfhd.s + 12), K = T[id]; if (!K) throw new Error('pista desconocida');
+    const tf = (all[tfhd.s + 9] << 16) | (all[tfhd.s + 10] << 8) | all[tfhd.s + 11], dd = trex[id] || {d:0, z:0, f:0};
+    let q = tfhd.s + 16, base = mf.s, defD = dd.d, defZ = dd.z, defF = dd.f;
+    if (tf & 1) { base = u32(all, q) * 2 ** 32 + u32(all, q + 4); q += 8; }
+    if (tf & 2) q += 4;
+    if (tf & 8) { defD = u32(all, q); q += 4; } if (tf & 16) { defZ = u32(all, q); q += 4; } if (tf & 32) { defF = u32(all, q); q += 4; }
+    if (K.t0 === null) K.t0 = !tfdt ? 0 : all[tfdt.s + 8] ? u32(all, tfdt.s + 12) * 2 ** 32 + u32(all, tfdt.s + 16) : u32(all, tfdt.s + 12);
+    const ver = all[trun.s + 8], rf = (all[trun.s + 9] << 16) | (all[trun.s + 10] << 8) | all[trun.s + 11], n = u32(all, trun.s + 12);
+    let r = trun.s + 16, off = null, ff = null;
+    if (rf & 1) { off = u32(all, r) | 0; r += 4; } if (rf & 4) { ff = u32(all, r); r += 4; }
+    let pos; if (off === null) { const md = kids(all, mf.e, all.length)[0]; if (!md) throw new Error('sin mdat'); pos = md.s + 8; } else pos = base + off;
+    const start = pos;
+    for (let i = 0; i < n; i++) {
+      let d = defD, z = defZ, f = (i === 0 && ff !== null) ? ff : defF, c = 0;
+      if (rf & 0x100) { d = u32(all, r); r += 4; } if (rf & 0x200) { z = u32(all, r); r += 4; }
+      if (rf & 0x400) { f = u32(all, r); r += 4; } if (rf & 0x800) { c = ver ? (u32(all, r) | 0) : u32(all, r); r += 4; }
+      K.dur.push(d); K.size.push(z); K.sync.push(!(f & 0x10000)); K.cts.push(c); pos += z;
+    }
+    if (pos > all.length) throw new Error('datos incompletos');
+    K.chunks.push(n); G.push({K, pos:start, len:pos - start});
+  });
+  const ids = order.filter(id => T[id].dur.length); if (!ids.length) throw new Error('sin muestras');
+
+  /* 3) tiempos: lista de edición para conservar la sincronía audio/video y la duración exacta */
+  let S = Infinity, total = 0;
+  ids.forEach(id => { const K = T[id]; let dts = 0, mn = Infinity, mx = 0; K.dur.forEach((d, i) => { mn = Math.min(mn, dts + K.cts[i]); mx = Math.max(mx, dts + K.cts[i] + d); dts += d; }); K.mdur = dts; K.minPts = mn; K.pend = mx; K.start = (K.t0 + mn) / K.ts; S = Math.min(S, K.start); });
+  ids.forEach(id => {
+    const K = T[id], delay = Math.round((K.start - S) * mts), len = Math.max(1, Math.round((K.pend - K.minPts) / K.ts * mts));
+    const ent = [...(delay > 0 ? [w32(delay, 0xFFFFFFFF, 0x00010000)] : []), w32(len, K.minPts, 0x00010000)];
+    K.edts = box('edts', full('elst', 0, w32(ent.length), ...ent)); K.total = delay + len; total = Math.max(total, K.total);
+  });
+
+  /* 4) tablas de muestras y armado final: ftyp + moov + mdat */
+  const trak = (K, offs) => {
+    const tkhd = K.tkhd.slice(), mdhd = K.mdhd.slice(); setDur(tkhd, 'tkhd', K.total); setDur(mdhd, 'mdhd', K.mdur);
+    const n = K.dur.length, stt = rl(K.dur), parts2 = [K.stsd, full('stts', 0, w32(stt.length), w32a(stt.flat()))];
+    if (K.cts.some(c => c)) { const rc = rl(K.cts), neg = K.cts.some(c => c < 0); parts2.push(full('ctts', neg ? 1 : 0, w32(rc.length), w32a(rc.flat()))); }
+    const ss = []; K.sync.forEach((v, i) => { if (v) ss.push(i + 1); }); if (ss.length < n) parts2.push(full('stss', 0, w32(ss.length), w32a(ss)));
+    const sc = []; let first = 1; rl(K.chunks).forEach(([cnt, spc]) => { sc.push(first, spc, 1); first += cnt; });
+    parts2.push(full('stsc', 0, w32(sc.length / 3), w32a(sc)), full('stsz', 0, w32(0, n), w32a(K.size)), full('stco', 0, w32(offs.length), w32a(offs)));
+    return box('trak', tkhd, K.edts, box('mdia', mdhd, K.hdlr, box('minf', ...K.minf, box('stbl', ...parts2))));
+  };
+  let rel = 0; G.forEach(g => { g.rel = rel; rel += g.len; });
+  const mv = mvhd.slice(); setDur(mv, 'mvhd', total);
+  const build = b0 => box('moov', mv, ...ids.map(id => trak(T[id], G.filter(g => g.K === T[id]).map(g => b0 + g.rel))));
+  const ft = init.slice(ftyp.s, ftyp.e), m0 = build(0), moovOut = build(ft.length + m0.length + 8);
+  const hdr = new Uint8Array(8); new DataView(hdr.buffer).setUint32(0, rel + 8); hdr.set([0x6d, 0x64, 0x61, 0x74], 4);
+  return new Blob([ft, moovOut, hdr, ...G.map(g => all.subarray(g.pos, g.pos + g.len))], {type:'video/mp4'});
+}
 async function toMp4(u8, fb) {   // u8 = TS ya reescrito con tsRebase(); fb = duración aproximada en segundos (respaldo)
   await loadMux();
   const t = new muxjs.mp4.Transmuxer({keepOriginalTimestamps:false, baseMediaDecodeTime:0}); let init = null; const parts = [], end = {};
@@ -597,8 +684,9 @@ async function toMp4(u8, fb) {   // u8 = TS ya reescrito con tsRebase(); fb = du
   t.on('audioSegmentTimingInfo', i => { end.soun = Math.max(end.soun || 0, i.end.dts / 90000); });
   t.push(u8); t.flush();                 // mux.js es síncrono: aquí ya salieron todos los datos
   if (!init || !parts.length) throw new Error('conversión vacía');
+  try { return flatMp4(init, parts); } catch (e) { dbg('mp4 normal: ' + e.message); }   // lo habitual
   try { patchDur(init, end, fb); } catch (e) { dbg('duración mp4: ' + e.message); }
-  return new Blob([init, ...parts], {type:'video/mp4'});
+  return new Blob([init, ...parts], {type:'video/mp4'});   // respaldo: MP4 fragmentado
 }
 const stamp = d => { const p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`; };
 
@@ -853,25 +941,35 @@ if ('serviceWorker' in navigator) navigator.serviceWorker.register('service-work
 
 /* ---------- Aviso de versión nueva: compara cada minuto la "huella" (ETag) de los archivos de la app ---------- */
 const WATCH = ['index.html', 'app.js', 'style.css'];
-let sig0 = null, updShown = false;
+let sig0 = null, sigSeen = null;
 async function sigNow() {
   try {
     const hs = await Promise.all(WATCH.map(async f => { const r = await fetch(f, {method:'HEAD', cache:'no-store'}); return r.headers.get('etag') || r.headers.get('last-modified') || ''; }));
-    return hs.join('|').replace(/\|/g, '') ? hs.join('|') : null;
+    return hs.some(Boolean) ? hs.join('|') : null;
   } catch { return null; }
 }
-function showUpdate() {
-  if (updShown) return; updShown = true;
+function showUpdateBar() {   // barra discreta que queda arriba si eliges "Más tarde"
   const d = document.createElement('div'); d.className = 'upd';
   d.innerHTML = '<span></span><button>Actualizar</button><button class="x" aria-label="Cerrar">✕</button>';
-  d.firstChild.textContent = 'Estamos haciendo cambios, por favor refresca la página.' + (drafts.length ? ' Antes descarga tus clips: se pierden al refrescar.' : '');
+  d.firstChild.textContent = 'Estamos haciendo cambios, por favor refresca la página.';
   d.children[1].onclick = () => location.reload();
-  d.children[2].onclick = () => { d.remove(); setTimeout(() => updShown = false, 5 * 60000); };
+  d.children[2].onclick = () => d.remove();
   document.body.appendChild(d);
+}
+function showUpdate() {   // ventana en el centro de la pantalla, aunque estés en pleno directo
+  document.querySelectorAll('.updm,.upd').forEach(x => x.remove());
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});   // en pantalla completa no se vería la ventana
+  const warn = drafts.length ? ` Tienes ${drafts.length} clip${drafts.length > 1 ? 's' : ''} sin descargar: descárgalo${drafts.length > 1 ? 's' : ''} antes, porque se pierden al refrescar.` : '';
+  const m = document.createElement('div'); m.className = 'updm'; m.setAttribute('role', 'dialog'); m.setAttribute('aria-modal', 'true');
+  m.innerHTML = '<div class="updbox"><h3>Estamos haciendo cambios</h3><p></p><div class="updact"><button class="go">Refrescar ahora</button><button class="later">Más tarde</button></div></div>';
+  m.querySelector('p').textContent = 'Por favor refresca la página para cargar la versión nueva.' + warn;
+  m.querySelector('.go').onclick = () => location.reload();
+  m.querySelector('.later').onclick = () => { m.remove(); showUpdateBar(); };
+  document.body.appendChild(m);
 }
 async function checkUpdate() {
   const s = await sigNow(); if (!s) return;
-  if (sig0 === null) sig0 = s; else if (s !== sig0) showUpdate();
+  if (sig0 === null) sig0 = s; else if (s !== sig0 && s !== sigSeen) { sigSeen = s; showUpdate(); }
 }
-checkUpdate(); setInterval(checkUpdate, 60000);
+checkUpdate(); setInterval(checkUpdate, 30000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) checkUpdate(); });

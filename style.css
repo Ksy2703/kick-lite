@@ -192,3 +192,11 @@ body.sr{padding-top:calc(78px + env(safe-area-inset-top))}
 .eg button{width:40px;height:40px;padding:4px;border-radius:8px}
 .eg button img{width:100%;height:100%;object-fit:contain;pointer-events:none}
 .eg button.sub{opacity:.45}
+.updm{position:fixed;inset:0;z-index:100;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(0,0,0,.72);backdrop-filter:blur(4px)}
+.updbox{width:100%;max-width:340px;padding:20px;border-radius:16px;background:var(--card);border:1px solid var(--g);text-align:center}
+.updbox h3{font-size:18px;margin-bottom:8px}
+.updbox p{color:var(--dim);font-size:14px;margin-bottom:16px}
+.updact{display:flex;flex-direction:column;gap:8px}
+.updact button{padding:11px;border-radius:12px;font-weight:700}
+.updact .go{background:var(--g);color:#000}
+.updact .later{background:#16241b;color:var(--dim)}
