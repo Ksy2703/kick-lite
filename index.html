@@ -15,7 +15,8 @@
 </head>
 <body>
 <header class="top">
-  <div class="brand"><h1 id="title">KickLite</h1><span class="by">By Suz</span></div>
+  <div class="brand"><span class="kl">KickLite</span><span class="by">By Suz</span></div>
+  <h1 id="title">Más vistos</h1>
   <div id="chips" class="chips">
     <button data-lang="es" class="on">Español</button><button data-lang="en">English</button><button data-lang="pt">Português</button>
   </div>
@@ -56,12 +57,11 @@
     <div id="clist"></div>
     <div id="cdur" class="cdur">Duración al marcar: <button data-d="15">15 s</button><button data-d="30">30 s</button><button data-d="60">60 s</button></div>
     <div id="ced" hidden>
-      <video id="cvid" controls playsinline muted></video>
-      <div class="trim">
-        <label>Inicio <b id="cs"></b></label><input id="cstart" type="range">
-        <label>Fin <b id="ce"></b></label><input id="cend" type="range">
-      </div>
-      <div class="cact"><button id="cshare">Compartir</button><button id="cdl">Descargar .mp4</button><button id="cts">.ts</button><button id="cback">‹ Volver</button></div>
+      <div class="cprev"><video id="cvid" playsinline muted></video><button id="cplay" class="cplay" aria-label="Reproducir">▶</button><button id="cmute" class="cmute" aria-label="Sonido">🔇</button></div>
+      <div id="tlbar" class="tlbar"><div id="tlsel" class="tlsel"></div><div id="tlph" class="tlph"></div><div id="tlh1" class="tlh"></div><div id="tlh2" class="tlh"></div></div>
+      <div class="tlt"><span id="ctime"></span><b id="clen"></b></div>
+      <input id="cname" class="cname" maxlength="60" placeholder="Título del clip" autocomplete="off">
+      <div class="cact"><button id="cshare">Compartir</button><button id="cdl">Descargar</button><button id="cts">.ts</button><button id="cback">‹ Volver</button></div>
     </div>
   </div>
 </div>

@@ -126,6 +126,7 @@ function show(items, msg, retry) {
 const banner = m => { $('#banner').hidden = !m; $('#banner').textContent = m || ''; };
 
 async function load() {
+  $('#title').textContent = {live:'Más vistos', favs:'Favoritos', multi:'Multistream', search:'Buscar'}[tab];
   $('#chips').hidden = tab !== 'live'; document.body.classList.toggle('sr', tab !== 'live');
   $('#searchForm').hidden = tab !== 'search';
   document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
@@ -513,24 +514,63 @@ function makeClip() {
   toast(`✂ Clip de ${Math.round(dur)} s guardado`);
 }
 function loadScript(u) { return new Promise((ok, no) => { const s = document.createElement('script'); s.src = u; s.onload = ok; s.onerror = no; document.head.appendChild(s); }); }
-async function loadMux() {
+async function loadMux() {   // convertidor TS→MP4: primero tu propio dominio (vendor/), luego CDN
   if (window.muxjs) return;
-  for (const u of ['https://cdnjs.cloudflare.com/ajax/libs/mux.js/7.0.3/mux.min.js', 'https://cdn.jsdelivr.net/npm/mux.js@7.0.3/dist/mux.min.js']) {
+  for (const u of ['vendor/mux.min.js', 'https://cdnjs.cloudflare.com/ajax/libs/mux.js/7.0.3/mux.min.js', 'https://cdn.jsdelivr.net/npm/mux.js@7.0.3/dist/mux.min.js']) {
     try { await loadScript(u); if (window.muxjs) return; } catch {}
   }
-  throw new Error('mux');
+  throw new Error('no se pudo cargar el convertidor');
 }
-const concat = fr => { const o = new Uint8Array(fr.reduce((s, x) => s + x.data.byteLength, 0)); let p = 0; fr.forEach(x => { o.set(new Uint8Array(x.data), p); p += x.data.byteLength; }); return o; };
-async function toMp4(fr) {
+
+/* Reescribe los timestamps (PTS/DTS/PCR) de los segmentos TS para que el clip empiece en ~0.
+   Los directos llevan horas de reloj acumulado: sin esto el archivo "dura 8 horas" y no se reproduce. */
+const P33 = 2 ** 33;
+const rdTs = (u, i) => ((u[i] >> 1) & 7) * 2 ** 30 + (u[i + 1] << 22) + ((u[i + 2] >> 1) << 15) + (u[i + 3] << 7) + (u[i + 4] >> 1);
+function wrTs(u, i, ts) {
+  ts = ((ts % P33) + P33) % P33;
+  u[i] = (u[i] & 0xF0) | ((Math.floor(ts / 2 ** 30) & 7) << 1) | 1;
+  u[i + 1] = Math.floor(ts / 2 ** 22) & 0xFF;
+  u[i + 2] = ((Math.floor(ts / 2 ** 15) & 0x7F) << 1) | 1;
+  u[i + 3] = Math.floor(ts / 2 ** 7) & 0xFF;
+  u[i + 4] = ((ts & 0x7F) << 1) | 1;
+}
+function tsWalk(u, fn) {
+  for (let p = 0; p + 188 <= u.length; p += 188) {
+    if (u[p] !== 0x47) continue;
+    const afc = (u[p + 3] >> 4) & 3; let o = p + 4;
+    if (afc & 2) { const len = u[p + 4]; if (len >= 7 && (u[p + 5] & 0x10)) fn('pcr', p + 6, u); o += 1 + len; }
+    if ((afc & 1) && (u[p + 1] & 0x40) && o + 14 <= p + 188 && u[o] === 0 && u[o + 1] === 0 && u[o + 2] === 1) {
+      const fl = u[o + 7] >> 6; if (fl & 2) fn('pts', o + 9, u); if (fl === 3) fn('dts', o + 14, u);
+    }
+  }
+}
+const rdPcr = (u, i) => u[i] * 2 ** 25 + u[i + 1] * 2 ** 17 + u[i + 2] * 2 ** 9 + u[i + 3] * 2 + (u[i + 4] >> 7);
+function tsRebase(chunks) {   // ArrayBuffer[] → Uint8Array (mismas longitudes, timestamps desde ~0,1 s)
+  const arr = chunks.map(c => new Uint8Array(c.slice(0))); let min = Infinity;
+  arr.forEach(u => tsWalk(u, (k, i) => { const t = k === 'pcr' ? rdPcr(u, i) : rdTs(u, i); if (t < min) min = t; }));
+  if (!isFinite(min)) min = 0;
+  const base = 9000;
+  arr.forEach(u => tsWalk(u, (k, i) => {
+    if (k === 'pcr') {
+      const ext = ((u[i + 4] & 1) << 8) | u[i + 5]; let b = ((rdPcr(u, i) - min + base) % P33 + P33) % P33;
+      u[i] = Math.floor(b / 2 ** 25) & 0xFF; u[i + 1] = Math.floor(b / 2 ** 17) & 0xFF; u[i + 2] = Math.floor(b / 2 ** 9) & 0xFF; u[i + 3] = Math.floor(b / 2) & 0xFF;
+      u[i + 4] = ((b & 1) << 7) | 0x7E | ((ext >> 8) & 1); u[i + 5] = ext & 0xFF;
+    } else wrTs(u, i, rdTs(u, i) - min + base);
+  }));
+  const out = new Uint8Array(arr.reduce((s, u) => s + u.length, 0)); let p = 0; arr.forEach(u => { out.set(u, p); p += u.length; });
+  return out;
+}
+async function toMp4(u8) {   // u8 = TS ya reescrito con tsRebase()
   await loadMux();
-  return new Promise((res, rej) => {
-    const t = new muxjs.mp4.Transmuxer(); let init = null; const parts = [];
-    t.on('data', s => { if (!init) init = s.initSegment; parts.push(s.data); });
-    t.on('done', () => init && parts.length ? res(new Blob([init, ...parts], {type:'video/mp4'})) : rej(new Error('vacío')));
-    fr.forEach(x => t.push(new Uint8Array(x.data))); t.flush();
-  });
+  const t = new muxjs.mp4.Transmuxer({keepOriginalTimestamps:false, baseMediaDecodeTime:0}); let init = null; const parts = [];
+  t.on('data', s => { if (!init) init = s.initSegment; parts.push(s.data); });
+  t.push(u8); t.flush();                 // mux.js es síncrono: aquí ya salieron todos los datos
+  if (!init || !parts.length) throw new Error('conversión vacía');
+  return new Blob([init, ...parts], {type:'video/mp4'});
 }
 const stamp = d => { const p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`; };
+
+/* ---------- Lista y editor de clips ---------- */
 function renderClips() {
   $('#clips').textContent = '🎞' + (drafts.length ? ' ' + drafts.length : '');
   $('#clist').innerHTML = drafts.length
@@ -538,31 +578,75 @@ function renderClips() {
     : '<p class="mh" style="padding:12px 16px">Aún no hay clips. Toca ✂ en el reproductor para guardar los últimos segundos.</p>';
   document.querySelectorAll('#cdur button').forEach(b => b.classList.toggle('on', +b.dataset.d === clipDur));
 }
-function showClipList() {
-  const vid = $('#cvid'); vid.pause(); if (ed?.url) URL.revokeObjectURL(ed.url); ed = null;
-  $('#ced').hidden = true; $('#clist').hidden = false; $('#cdur').hidden = false; $('#ctitle').textContent = 'Clips'; renderClips();
+function edClose() {
+  const cv = $('#cvid'); cv.pause();
+  if (ed) { if (ed.hls) ed.hls.destroy(); if (ed.url) URL.revokeObjectURL(ed.url); ed.urls.forEach(u => URL.revokeObjectURL(u)); }
+  cv.removeAttribute('src'); cv.load(); ed = null;
 }
-const edLabels = () => { const s = +$('#cstart').value, e = +$('#cend').value; $('#cs').textContent = mmss(ed.b[s]); $('#ce').textContent = mmss(ed.b[e]) + ' · ' + Math.round(ed.b[e] - ed.b[s]) + ' s'; };
+function showClipList() {
+  edClose(); $('#ced').hidden = true; $('#clist').hidden = false; $('#cdur').hidden = false; $('#ctitle').textContent = 'Clips'; renderClips();
+}
+const edT = () => ed.b[ed.b.length - 1];
+function tlPaint() {
+  const T = edT(), l = ed.b[ed.s] / T * 100, r = ed.b[ed.e] / T * 100;
+  $('#tlsel').style.left = l + '%'; $('#tlsel').style.width = (r - l) + '%';
+  $('#tlh1').style.left = l + '%'; $('#tlh2').style.left = r + '%';
+  $('#ctime').textContent = mmss(ed.b[ed.s]) + ' – ' + mmss(ed.b[ed.e]); $('#clen').textContent = Math.round(ed.b[ed.e] - ed.b[ed.s]) + ' s';
+}
+function tlDrag(which, ev) {
+  if (!ed) return; ev.preventDefault();
+  const bar = $('#tlbar'), h = ev.currentTarget, cv = $('#cvid'); h.setPointerCapture(ev.pointerId);
+  const move = e => {
+    const r = bar.getBoundingClientRect(), t = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) * edT();
+    let k = 0, best = 1e9; ed.b.forEach((x, i) => { const d = Math.abs(x - t); if (d < best) { best = d; k = i; } });
+    if (which === 1) ed.s = Math.min(k, ed.e - 1); else ed.e = Math.max(k, ed.s + 1);
+    tlPaint(); cv.currentTime = ed.b[which === 1 ? ed.s : Math.max(ed.s, ed.e - 1)];
+  };
+  const up = () => { h.removeEventListener('pointermove', move); h.removeEventListener('pointerup', up); h.removeEventListener('pointercancel', up); };
+  h.addEventListener('pointermove', move); h.addEventListener('pointerup', up); h.addEventListener('pointercancel', up);
+}
+function vodPreview() {   // vista previa de respaldo: HLS local con los mismos segmentos (la reproducción normal ya demostró que funcionan)
+  const sizes = ed.d.frags.map(x => x.data.byteLength); let o = 0;
+  let pl = '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:' + Math.ceil(Math.max(...ed.d.frags.map(f => f.dur))) + '\n#EXT-X-MEDIA-SEQUENCE:0\n';
+  ed.d.frags.forEach((f, i) => { const u = URL.createObjectURL(new Blob([ed.ts.subarray(o, o + sizes[i])], {type:'video/mp2t'})); ed.urls.push(u); o += sizes[i]; pl += `#EXTINF:${f.dur.toFixed(3)},\n${u}\n`; });
+  const pu = URL.createObjectURL(new Blob([pl + '#EXT-X-ENDLIST\n'], {type:'application/vnd.apple.mpegurl'})); ed.urls.push(pu);
+  const cv = $('#cvid'); cv.removeAttribute('src');
+  if (window.Hls && Hls.isSupported()) { ed.hls = new Hls({enableWorker:false}); ed.hls.loadSource(pu); ed.hls.attachMedia(cv); } else cv.src = pu;
+}
 async function openEditor(id) {
   const d = drafts.find(x => x.id === id); if (!d) return;
-  const b = [0]; d.frags.forEach(f => b.push(b[b.length - 1] + f.dur)); const n = d.frags.length;
-  ed = {d, b, url:''};
+  const b = [0]; d.frags.forEach(f => b.push(b[b.length - 1] + f.dur));
+  ed = {d, b, s:0, e:d.frags.length, url:'', urls:[], hls:null, useTs:false, ts:null};
   $('#clist').hidden = true; $('#cdur').hidden = true; $('#ced').hidden = false; $('#ctitle').textContent = 'Editar clip';
-  Object.assign($('#cstart'), {min:0, max:Math.max(0, n - 1), step:1, value:0}); Object.assign($('#cend'), {min:1, max:n, step:1, value:n}); edLabels();
-  const vid = $('#cvid');
-  try { const blob = await toMp4(d.frags); if (!ed || ed.d !== d) return; ed.url = URL.createObjectURL(blob); vid.src = ed.url; vid.play().catch(() => {}); }
-  catch { toast('Sin vista previa: se podrá guardar como .ts'); }
+  $('#cname').value = ''; $('#cplay').hidden = true; tlPaint();
+  const cv = $('#cvid'), mine = ed;
+  ed.ts = tsRebase(d.frags.map(x => x.data)); let ok = false;
+  try {
+    const blob = await toMp4(ed.ts); if (ed !== mine) return;
+    ed.url = URL.createObjectURL(blob); cv.src = ed.url;
+    ok = await new Promise(res => {
+      const t = setTimeout(() => res(false), 4000);
+      cv.onloadedmetadata = () => { clearTimeout(t); res(isFinite(cv.duration) && Math.abs(cv.duration - edT()) < 4); };
+      cv.onerror = () => { clearTimeout(t); res(false); };
+    });
+  } catch (e) { dbg('mp4: ' + e.message); }
+  if (ed !== mine) return;
+  if (!ok) { ed.useTs = true; if (ed.url) { URL.revokeObjectURL(ed.url); ed.url = ''; } vodPreview(); toast('Modo compatible: este clip se exportará como .ts'); }
+  cv.play().catch(() => { $('#cplay').hidden = false; });
 }
 async function exportClip(kind) {
   if (!ed) return;
-  const sub = ed.d.frags.slice(+$('#cstart').value, +$('#cend').value), name = `${ed.d.slug}-${stamp(ed.d.at)}`;
+  const fr = ed.d.frags.slice(ed.s, ed.e), ts = tsRebase(fr.map(x => x.data));
+  const nm = ($('#cname').value.trim() || ed.d.slug).replace(/[^\w\-áéíóúñÁÉÍÓÚÑ ]/g, '').trim().replace(/\s+/g, '-') || ed.d.slug;
+  const base = nm + '-' + stamp(ed.d.at);
   let blob, ext = 'mp4';
-  if (kind === 'ts') { blob = new Blob([concat(sub)], {type:'video/mp2t'}); ext = 'ts'; }
-  else { try { blob = await toMp4(sub); } catch { blob = new Blob([concat(sub)], {type:'video/mp2t'}); ext = 'ts'; toast('No se pudo convertir a .mp4: se guardó como .ts'); } }
-  const file = new File([blob], `${name}.${ext}`, {type:blob.type});
-  if (kind === 'share' && navigator.canShare?.({files:[file]})) { try { await navigator.share({files:[file], title:name}); return; } catch (e) { if (e.name === 'AbortError') return; } }
+  const asTs = () => { ext = 'ts'; return new Blob([ts], {type:'video/mp2t'}); };
+  if (kind === 'ts' || ed.useTs) blob = asTs();
+  else { try { blob = await toMp4(ts); } catch (e) { blob = asTs(); toast('No se pudo convertir a .mp4: se guardó como .ts'); } }
+  const file = new File([blob], `${base}.${ext}`, {type:blob.type});
+  if (kind === 'share' && navigator.canShare?.({files:[file]})) { try { await navigator.share({files:[file], title:nm}); return; } catch (e) { if (e.name === 'AbortError') return; } }
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = file.name; document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+  setTimeout(() => URL.revokeObjectURL(a.href), 60000); toast('Clip guardado (' + ext + ')');
 }
 $('#clip').onclick = makeClip;
 $('#clips').onclick = () => { showClipList(); $('#csheet').hidden = false; };
@@ -573,9 +657,24 @@ $('#clist').addEventListener('click', e => {
   const b = e.target.closest('[data-e]'), q = e.target.closest('[data-q]');
   if (b) openEditor(+b.dataset.e); else if (q) { drafts = drafts.filter(x => x.id !== +q.dataset.q); renderClips(); }
 });
-$('#cstart').addEventListener('input', () => { const s = $('#cstart'), e = $('#cend'); if (+s.value >= +e.value) e.value = +s.value + 1; edLabels(); $('#cvid').currentTime = ed.b[+s.value]; });
-$('#cend').addEventListener('input', () => { const s = $('#cstart'), e = $('#cend'); if (+e.value <= +s.value) s.value = +e.value - 1; edLabels(); $('#cvid').currentTime = ed.b[+s.value]; });
-$('#cvid').addEventListener('timeupdate', () => { const vd = $('#cvid'); if (ed && vd.currentTime >= ed.b[+$('#cend').value] - 0.05) vd.currentTime = ed.b[+$('#cstart').value]; });
+$('#tlh1').addEventListener('pointerdown', e => tlDrag(1, e));
+$('#tlh2').addEventListener('pointerdown', e => tlDrag(2, e));
+$('#tlbar').addEventListener('pointerdown', e => {
+  if (!ed || e.target.classList.contains('tlh')) return;
+  const r = $('#tlbar').getBoundingClientRect(), t = (e.clientX - r.left) / r.width * edT();
+  $('#cvid').currentTime = Math.min(ed.b[ed.e] - 0.1, Math.max(ed.b[ed.s], t));
+});
+const cvEl = $('#cvid');
+cvEl.addEventListener('timeupdate', () => {
+  if (!ed) return;
+  if (cvEl.currentTime >= ed.b[ed.e] - 0.05 || cvEl.currentTime < ed.b[ed.s] - 0.4) cvEl.currentTime = ed.b[ed.s];
+  $('#tlph').style.left = Math.min(100, cvEl.currentTime / edT() * 100) + '%';
+});
+cvEl.addEventListener('play', () => { $('#cplay').hidden = true; });
+cvEl.addEventListener('pause', () => { $('#cplay').hidden = false; });
+cvEl.addEventListener('click', () => cvEl.paused ? cvEl.play() : cvEl.pause());
+$('#cplay').onclick = () => cvEl.play();
+$('#cmute').onclick = () => { cvEl.muted = !cvEl.muted; $('#cmute').textContent = cvEl.muted ? '🔇' : '🔊'; };
 $('#cshare').onclick = () => exportClip('share');
 $('#cdl').onclick = () => exportClip('mp4');
 $('#cts').onclick = () => exportClip('ts');
